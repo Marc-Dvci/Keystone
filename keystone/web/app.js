@@ -168,7 +168,17 @@ function onEvent(e) {
   if (e.kind === "tap.verified") counts.tapok++;
   if (e.kind === "tap.rejected") counts.tapno++;
   if (isSeq) {
-    if (e.kind === "seq.unwound" || (e.kind === "basket.report" && isSeq)) showSeq(d);
+    if (e.kind === "seq.started") { resetLegs(current.mandate); $("#bid").textContent = "sequential agent: pays each leg as it goes"; $("#intents tbody").innerHTML = ""; $("#cards tbody").innerHTML = ""; }
+    if (e.kind === "seq.unwound") showSeq(d);
+    const SL = d.leg_id && legs[d.leg_id];
+    if (SL) {
+      if (e.kind === "issuer.card_issued") SL.st.card = true;
+      if (e.kind === "prepare.sent") { SL.offer = d.offer; SL.merchant = d.merchant; SL.amount = d.amount.split(" ")[0]; }
+      if (e.kind === "prepare.held") SL.st.held = true;
+      if (e.kind === "seq.paid") SL.st.cap = true;
+      if (e.kind === "prepare.failed") { SL.st.fail = true; SL.hist.push(`${SL.merchant}: ${d.why}`); }
+      flash(d.leg_id); renderLegs();
+    }
     renderCounts(); return;
   }
   const L = d.leg_id && legs[d.leg_id];
@@ -234,7 +244,7 @@ async function pollLedger() {
     const a = await fetch("/api/airwallex").then((r) => r.json());
     $("#awxmode").textContent = a.mode === "live" ? "sandbox API" : "replay simulator";
     $("#intents tbody").innerHTML = a.intents.map((i) => `<tr><td class="mono">${esc((i.id || "").slice(0, 18))}</td><td>${esc(i.leg)}</td><td><span class="st ${esc(i.status)}">${esc(i.status || i.error)}</span></td><td class="r">${money(i.amount, i.currency)}</td></tr>`).join("");
-    $("#cards tbody").innerHTML = a.cards.map((c) => `<tr><td>•${esc(c.last4)} ${esc(c.leg)}</td><td class="mono">${c.txns.map((t) => `${t.type.replace("REVERSAL_AUTH", "REVERSAL")} ${t.amount}`).join(" · ")}</td><td><span class="st ${esc(c.status)}">${esc(c.status)}</span></td></tr>`).join("");
+    $("#cards tbody").innerHTML = a.cards.map((c) => `<tr><td>•${esc(c.last4)} ${esc(c.leg)}</td><td class="mono">${c.txns.map((t) => `${t.type.replace("REVERSAL_AUTH", "REVERSAL")} ${Math.abs(Number(t.amount)).toFixed(2)}${t.status === "REVERSED" ? " reversed" : ""}`).join(" · ")}</td><td><span class="st ${esc(c.status)}">${esc(c.status)}</span></td></tr>`).join("");
   } catch (e) { /* the console keeps going while the coordinator restarts */ }
 }
 

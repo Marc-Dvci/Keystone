@@ -98,6 +98,7 @@ async def _vic_source(iid: str, leg_id: str) -> dict:
 
 vic.source = _vic_source
 recovered = asyncio.Event()
+_tasks: set = set()
 
 
 app = FastAPI(title="Keystone")
@@ -114,7 +115,8 @@ app.include_router(vic.router())
 @app.on_event("startup")
 async def startup():
     bus.emit("keystone.started", "coordinator", mode="live" if LIVE else "replay", pid=os.getpid())
-    asyncio.get_running_loop().create_task(_recover())
+    # Keep a reference: the event loop holds tasks weakly, and a collected task never sets `recovered`.
+    _tasks.add(asyncio.get_running_loop().create_task(_recover()))
 
 
 async def _recover():
@@ -255,6 +257,7 @@ async def run(payload: dict):
     basket_id = f"bkt_{os.urandom(6).hex()}"
     coordinators[basket_id] = c
     state["running"] = basket_id
+    state["view_basket"] = basket_id
 
     async def go():
         try:
@@ -270,7 +273,7 @@ async def run(payload: dict):
             bus.emit("coordinator.error", "coordinator", basket_id=basket_id, error=f"{type(e).__name__}: {e}"[:300])
         finally:
             state["running"] = None
-    asyncio.get_running_loop().create_task(go())
+    _tasks.add(asyncio.get_running_loop().create_task(go()))
     return {"basket_id": basket_id, "instruction_id": ins["instructionId"]}
 
 
@@ -279,13 +282,18 @@ async def run_sequential(payload: dict):
     name = payload.get("scenario", state["scenario"])
     await _apply_faults(name, payload.get("faults") or [])
     c = make_coordinator(name, SequentialAgent)
+    basket_id = f"seq_{os.urandom(6).hex()}"
+    coordinators[basket_id] = c
+    state["view_basket"] = basket_id
 
     async def go():
         try:
-            state["seq_report"] = await c.run(SCENARIOS[name]["mandate"](), {})
+            state["seq_report"] = await c.run(SCENARIOS[name]["mandate"](), {}, basket_id=basket_id)
         except Exception as e:
             bus.emit("coordinator.error", "sequential", error=f"{type(e).__name__}: {e}"[:300])
-    asyncio.get_running_loop().create_task(go())
+        finally:
+            pass
+    _tasks.add(asyncio.get_running_loop().create_task(go()))
     return {"ok": True}
 
 
@@ -348,7 +356,7 @@ async def esc_resolve(eid: str, payload: dict):
 async def airwallex_view():
     out = {"mode": "live" if LIVE else "replay", "base_url": awx.base, "intents": [], "cards": [], "balances": {},
            "calls": len(awx.calls)}
-    basket = state["running"] or (state["last_report"] or {}).get("basket_id")
+    basket = state.get("view_basket") or (state["last_report"] or {}).get("basket_id")
     c = coordinators.get(basket) if basket else None
     if c is None:
         return out

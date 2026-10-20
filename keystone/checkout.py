@@ -10,6 +10,8 @@ Airwallex's domains carry no agent headers.
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from urllib.parse import urlsplit
 
 from . import tap
@@ -22,9 +24,15 @@ def page_html(intent_id: str, client_secret: str, currency: str, env: str, pre_a
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Checkout</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://static.airwallex.com/components/sdk/v1/index.js"></script>
-<style>body{{font:15px system-ui,sans-serif;margin:32px;color:#0b0d12;background:#fff}}#card{{max-width:440px;margin:16px 0}}</style>
-</head><body><h1 style="font-size:18px">{title}</h1><p>{amount} {currency}, held now, charged only when every leg is held.</p>
-<div id="card"></div><button id="pay">Hold</button><pre id="out"></pre>
+<style>body{{font:15px system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;color:#0b0d12;background:#fff}}
+.bar{{padding:18px 32px;border-bottom:1px solid #e6e8ec;font-weight:600}} main{{padding:24px 32px;max-width:560px}}
+.amt{{font-size:28px;font-weight:600;margin:6px 0 4px}} .note{{color:#667085;margin:0 0 18px}}
+#card{{border:1px solid #d0d5dd;border-radius:8px;padding:12px;margin:0 0 16px}}
+#pay{{background:#0b0d12;color:#fff;border:0;border-radius:6px;padding:10px 18px;font-weight:600;font-size:15px}}
+#out{{display:none}}</style>
+</head><body><div class="bar">{title}</div><main><div class="amt">{amount} {currency}</div>
+<p class="note">Authorization hold only. Captured when every leg of the basket is held; voided free otherwise.</p>
+<div id="card"></div><button id="pay">Place hold</button><pre id="out"></pre></main>
 <script>
 (async () => {{
   try {{
@@ -51,6 +59,7 @@ class AgentBrowser:
         self._pw = None
         self._browser = None
         self._lock = asyncio.Lock()
+        self.viewport = {"width": 900, "height": 560}
 
     async def _ensure(self):
         if self._browser is None:
@@ -62,7 +71,7 @@ class AgentBrowser:
     async def pay(self, checkout_url: str, card: CardDetails, timeout_s: float = 40) -> dict:
         async with self._lock:
             browser = await self._ensure()
-            ctx = await browser.new_context()
+            ctx = await browser.new_context(viewport=self.viewport, device_scale_factor=2)
             merchant = urlsplit(checkout_url).netloc
             try:
                 page = await ctx.new_page()
@@ -90,6 +99,11 @@ class AgentBrowser:
                 await frame.locator("input[name=cardnumber-input]").type(card.number, delay=20)
                 await frame.locator("input[name=expiry-input]").type(card.expiry_month + card.expiry_year[-2:], delay=20)
                 await frame.locator("input[name=cvc-input]").type(card.cvc, delay=20)
+                shots = os.environ.get("KEYSTONE_CHECKOUT_SHOTS")
+                if shots:  # for the demo film: the checkout as the agent's browser sees it
+                    os.makedirs(shots, exist_ok=True)
+                    await page.wait_for_timeout(400)
+                    await page.screenshot(path=os.path.join(shots, f"checkout_{int(time.time() * 1000)}.png"))
                 await page.click("#pay")
                 await page.wait_for_function("document.title === 'held' || document.title === 'failed'",
                                              timeout=timeout_s * 1000)

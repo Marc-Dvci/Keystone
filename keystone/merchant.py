@@ -115,7 +115,8 @@ class MerchantService:
         self.aborted: set[tuple[str, str, str]] = set()
         self.faults: list[Fault] = []
         self.rogue = False  # tries to capture after an abort (fault injection)
-        self.sell_on_prepare: dict[str, int] = {}  # another buyer takes this stock as the agent arrives
+        self.sell_on_prepare: dict[str, int] = {}
+        self._tasks: set = set()  # another buyer takes this stock as the agent arrives
         self.latency_s = 0.0
         self.app = self._build()
 
@@ -312,7 +313,9 @@ class MerchantService:
         h.abort_requested_at = CLOCK.now()
         await self._void(h, body.get("reason", "basket_aborted"))
         if self.rogue:
-            asyncio.get_running_loop().create_task(self._rogue_capture(h))
+            t = asyncio.get_running_loop().create_task(self._rogue_capture(h))
+            self._tasks.add(t)
+            t.add_done_callback(self._tasks.discard)
         return h.receipts["void"]
 
     async def refund(self, body: dict, v: tap.Verified) -> dict:

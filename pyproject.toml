@@ -1,0 +1,32 @@
+[project]
+name = "keystone"
+version = "0.1.0"
+description = "All-or-nothing agent purchases across merchants, on Visa card holds and Airwallex"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "httpx>=0.28",
+    "cryptography>=43",
+    "pydantic>=2.9",
+    "webauthn>=2.2",
+    "anthropic>=0.40",
+    "sse-starlette>=2.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["keystone*"]
+
+[tool.setuptools.package-data]
+keystone = ["web/*", "web/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

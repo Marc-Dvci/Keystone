@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: keystone
+Version: 0.1.0
+Summary: All-or-nothing agent purchases across merchants, on Visa card holds and Airwallex
+Requires-Python: >=3.11
+Requires-Dist: fastapi>=0.115
+Requires-Dist: uvicorn>=0.32
+Requires-Dist: httpx>=0.28
+Requires-Dist: cryptography>=43
+Requires-Dist: pydantic>=2.9
+Requires-Dist: webauthn>=2.2
+Requires-Dist: anthropic>=0.40
+Requires-Dist: sse-starlette>=2.1
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24; extra == "dev"

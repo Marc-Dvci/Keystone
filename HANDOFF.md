@@ -19,7 +19,7 @@ python scripts/drive_console.py --out docs/shots   # headless Chromium, virtual 
 ## Open items
 
 1. Advisor: Gemini 3.8 Flash on Vertex (`KEYSTONE_ADVISOR=gemini`, `GOOGLE_CLOUD_PROJECT`). Bedrock answers "Operation not allowed" on the AWS account tried.
-2. Film and writeup (no gallery for this project).
+2. Film and writeup are done outside the repo: `../film/remotion/out/keystone.mp4` (3:15, 2560x1440, captions in `../film/narration/narration.srt`, upload text in `../film/YOUTUBE.md`) and `../WRITEUP.md`. Remaining: upload the film and paste its link into the writeup and the README.
 
 ## Known limits
 

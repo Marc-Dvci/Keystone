@@ -56,9 +56,8 @@ class Network:
 
     async def authorize(self, intent: Intent, card: CardDetails, mcc: int, merchant: str, request_id: str,
                         pre_auth: bool) -> Link:
-        card_id = self.routes.get(card.number)
-        if card_id is None:
-            raise Declined("UNKNOWN_CARD")
+        # The simulation routes by card number, so an unregistered PAN still reaches the issuer.
+        card_id = self.routes.get(card.number, "")
         txn = await self.iss.simulate_authorization(card_id, card.number, intent.amount, intent.currency, mcc, merchant)
         self.bus.emit("issuer.authorization", "issuer", card_id=card_id, txn=txn.id, amount=str(intent.amount),
                       currency=intent.currency, merchant=merchant, status=txn.status, reason=txn.failure_reason)

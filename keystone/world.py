@@ -55,7 +55,7 @@ def build_world(*, journal_path: str, awx=None, in_process: bool = True, host: s
                 live: bool = False, merchant_specs: list[dict] | None = None, **coord_kw) -> World:
     awx = awx or FakeAirwallex()
     ledger = BasketLedger(bus)
-    network = Network(awx, awx, bus, live=live, ledger=ledger)
+    network = Network(awx, awx, bus, live=live or getattr(awx, "mode", "") == "live", ledger=ledger)
     awx.remote_auth = ledger.decide
     agent_key = tap.AgentKey.from_seed("keystone-agent-1", os.environ.get("KEYSTONE_AGENT_SEED", "keystone-demo").encode())
     if directory is None:

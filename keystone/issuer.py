@@ -7,6 +7,7 @@ would push the basket over its cap, a second hold on a leg, and any hold on a ba
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -46,6 +47,7 @@ class BasketLedger:
         self.bus = bus
         self.baskets: dict[str, BasketBook] = {}
         self.cards: dict[str, tuple[str, str]] = {}
+        self.pans: dict[str, str] = {}  # sha256(PAN) -> card_id, for relayed requests that carry no card_id
         self.decisions: list[dict] = []
 
     def open(self, basket_id: str, home_currency: str, cap: Decimal) -> BasketBook:
@@ -60,6 +62,9 @@ class BasketLedger:
         b.legs[leg_id] = LegBook(leg_id, card_id, currency, rate_to_home)
         self.cards[card_id] = (basket_id, leg_id)
 
+    def bind_pan(self, card_id: str, pan: str) -> None:
+        self.pans[hashlib.sha256(pan.encode()).hexdigest()] = card_id
+
     def set_rate(self, basket_id: str, leg_id: str, rate_to_home: Decimal) -> None:
         self.baskets[basket_id].legs[leg_id].rate_to_home = rate_to_home
 
@@ -67,7 +72,9 @@ class BasketLedger:
         self.baskets[basket_id].status = status
 
     async def decide(self, req: dict) -> dict:
-        card_id = req["card_id"]
+        card_id = req.get("card_id") or self.pans.get(req.get("card_number_sha256", ""), "")
+        if card_id not in self.cards and req.get("card_number_sha256") in self.pans:
+            card_id = self.pans[req["card_number_sha256"]]
         amount = Decimal(req["transaction_amount"])
         decision = self._decide(card_id, amount, req)
         self.decisions.append({"request": req, "decision": decision, "at": CLOCK.now().isoformat()})
@@ -126,6 +133,7 @@ class LegCards:
                                           str(uuid.uuid4()))
         details = await self.iss.card_details(card.id)
         self.net.register_card(details.number, card.id)
+        self.ledger.bind_pan(card.id, details.number)
         self.ledger.bind(basket_id, leg.leg_id, card.id, leg.currency, rate_to_home)
         self.by_leg[(basket_id, leg.leg_id)] = (card, details)
         self.bus.emit("issuer.card_issued", "issuer", basket_id=basket_id, leg_id=leg.leg_id, card_id=card.id,

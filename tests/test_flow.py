@@ -18,7 +18,7 @@ async def test_happy_path_commits_every_leg(world):
     # Every intent captured once; every card closed.
     caps = [e for e in world.bus.history if e.kind == "merchant.captured"]
     assert len(caps) == 4
-    assert all(c.status == "CLOSED" for c in world.awx.cards.values())
+    assert all(c.status == "CLOSED" for c in world.extra['fake'].cards.values())
     # Scarcest first.
     order = next(e for e in world.bus.history if e.kind == "basket.order").data["order"]
     assert order[0] in ("hotel", "dinner")
@@ -39,7 +39,7 @@ async def test_unfillable_at_plan_aborts_before_any_hold(world):
     world.merchants["lisbon-payments-summit"].offers["PASS-3D"].available = 2
     rep = await world.coordinator.run(mandate_lisbon(), {"kind": "test"})
     assert rep["status"] == "ABORTED"
-    assert world.awx.intents == {} and world.awx.cards == {}
+    assert world.extra['fake'].intents == {} and world.extra['fake'].cards == {}
 
 
 async def test_sold_out_named_leg_aborts_with_zero_charged(world):
@@ -51,10 +51,10 @@ async def test_sold_out_named_leg_aborts_with_zero_charged(world):
     assert kinds(world.bus, "merchant.captured") == []
     voids = [e for e in world.bus.history if e.kind == "merchant.voided"]
     assert len(voids) == 3  # hotel, dinner, flights were held, then voided
-    for it in world.awx.intents.values():
+    for it in world.extra['fake'].intents.values():
         assert it.status in ("CANCELLED", "REQUIRES_PAYMENT_METHOD")
     # Issuer side shows reversals for each authorization and no clearing.
-    types = [t.transaction_type for t in world.awx.txns.values()]
+    types = [t.transaction_type for t in world.extra['fake'].txns.values()]
     assert "CLEARING" not in types and types.count("REVERSAL") == 3
 
 
@@ -126,7 +126,7 @@ async def test_rogue_merchant_capture_after_abort_is_refused(world):
     await asyncio.sleep(0.5)
     refused = [e for e in world.bus.history if e.kind == "merchant.rogue_capture_refused"]
     assert len(refused) == 1
-    assert "CLEARING" not in [t.transaction_type for t in world.awx.txns.values()]
+    assert "CLEARING" not in [t.transaction_type for t in world.extra['fake'].txns.values()]
 
 
 async def test_commit_error_after_capture_is_retried_idempotently(world):

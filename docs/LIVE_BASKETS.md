@@ -41,7 +41,7 @@ Basket `bkt_b01da7b8ae35`. The process exited at 15:04:37.751 while preparing th
 
 ## 4. The restaurant cancels; the person decides
 
-Basket `bkt_3f21f7b27538`, with the advisor on Gemini 3.8 Flash (Vertex AI). Nothing satisfied the dinner rules, so Keystone held the other legs and put two priced options to the person. The explanation Gemini wrote, from the options the code priced:
+Basket `bkt_3f21f7b27538`, with the advisor on Gemini 3.8 Flash (Vertex AI). Nothing satisfied the dinner rules at planning time, so before placing any hold Keystone put two priced options to the person. The explanation Gemini wrote, from the options the code priced:
 
 > No offers meet all your criteria for the Thursday client dinner. The tasting menu at Casa Ribeira is €560.00 but is 1.4 km away, exceeding your 1.0 km distance limit. Alternatively, the Chef's counter meets the distance requirement but costs €720.00, exceeding your substitute budget cap of €650.00.
 

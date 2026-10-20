@@ -213,7 +213,7 @@ class Coordinator:
             if not cands:
                 unfilled.append(lr)
                 continue
-            lr.merchant, lr.offer, lr.fit = cands[0]
+            lr.merchant, lr.offer, lr.fit = (await self._rank(lr.spec, cands))[0]
             lr.home_amount = await self._home_amount(lr, mandate, window)
         for lr in unfilled:
             lr.history.append({"why": f"no offer fits {lr.spec.leg_id} as written"})

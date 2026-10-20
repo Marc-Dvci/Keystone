@@ -28,6 +28,7 @@ from .journal import Journal
 from .passkey import PasskeyError, PasskeyStore, SoftAuthenticator
 from .scenarios import mandate_hardware, mandate_lisbon, merchants_hardware, merchants_lisbon
 from .sequential import SequentialAgent
+from .advisor import from_env as advisor_from_env
 from .vic import VicStandIn, instruction_body
 
 ROOT = Path(os.environ.get("KEYSTONE_DATA", "runs/console"))
@@ -75,7 +76,7 @@ coordinators: dict[str, Coordinator] = {}
 def make_coordinator(scenario: str, cls=Coordinator) -> Coordinator:
     c = cls(journal=journal, agent_key=agent_key, merchants=_refs(scenario), fx=awx, issuing=awx, network=_NoRoutes(),
             ledger=ledger, http=http, bus=bus, directory_url=f"{ORIGIN}/registry", vic=vic if cls is Coordinator else None,
-            escalation_timeout_s=600)
+            escalation_timeout_s=600, advisor=advisor_from_env(SCENARIOS[scenario]["mandate"]().purpose))
 
     async def source(iid: str, leg_id: str) -> dict:
         basket = next(b for b, i in c.instructions.items() if i == iid)

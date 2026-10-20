@@ -104,6 +104,7 @@ class Coordinator:
         self.escalation_timeout_s = escalation_timeout_s
         self.escalations: dict[str, Escalation] = {}
         self.browse_errors: dict[str, list[str]] = {}
+        self.merchant_names: dict[str, str] = {}
         self.vic = vic
         self.browser = browser  # AgentBrowser, for merchants whose checkout is Airwallex's Card Element
         self.checkout_card = checkout_card  # the card typed there; the sandbox acquirer accepts only test cards
@@ -137,6 +138,8 @@ class Coordinator:
         async def one(m: MerchantRef):
             try:
                 r = await self._signed("GET", f"{m.base_url}/catalog", None, tap.TAG_BROWSE)
+                if r.status_code == 200:
+                    self.merchant_names[m.merchant_id] = r.json().get("merchant_name", m.merchant_id)
                 if r.status_code != 200:
                     code = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}).get(
                         "error", f"http_{r.status_code}")
@@ -364,7 +367,8 @@ class Coordinator:
             home = await self._home_amount(lr_probe, mandate, window)
             if home > room:
                 continue
-            options.append({"merchant_id": m.merchant_id, "offer_id": o.offer_id, "title": o.title,
+            options.append({"merchant_id": m.merchant_id, "merchant": self.merchant_names.get(m.merchant_id, m.merchant_id),
+                            "offer_id": o.offer_id, "title": o.title,
                             "amount": str(o.total(lr.spec.quantity)), "currency": o.currency, "home": str(home),
                             "breaks": f.reasons, "attrs": o.attrs})
         options.sort(key=lambda x: Decimal(x["home"]))

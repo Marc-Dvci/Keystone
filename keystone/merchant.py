@@ -372,7 +372,8 @@ class MerchantService:
         async def catalog(request: Request):
             await svc._verify(request, b"", tap.TAG_BROWSE)
             await svc.sweep()
-            return {"merchant_id": svc.id, "offers": [o.model_dump(mode="json") for o in svc.offers.values()]}
+            return {"merchant_id": svc.id, "merchant_name": svc.name,
+                    "offers": [o.model_dump(mode="json") for o in svc.offers.values()]}
 
         async def phase(request: Request, name: str):
             body = await request.body()

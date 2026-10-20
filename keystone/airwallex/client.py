@@ -58,6 +58,7 @@ class AirwallexClient:
         self.remote_auth: RemoteAuth | None = None
         self.calls: list[dict] = []
         self.remote_auth_enabled = os.environ.get("AWX_REMOTE_AUTH_ENABLED") == "1"
+        self._lifecycle_currency: dict[str, str] = {}
 
     # ------------------------------------------------------------------ transport
     async def _auth(self) -> str:
@@ -132,7 +133,7 @@ class AirwallexClient:
 
     async def refund(self, intent_id, amount, request_id, reason="keystone_compensation"):
         return await self._call("POST", "/pa/refunds/create", {"payment_intent_id": intent_id, "request_id": request_id,
-                                                               "amount": _num(amount), "reason": reason})
+                                                               "amount": _num(quantize(amount, "USD")), "reason": reason})
 
     # ------------------------------------------------------------------ issuing
     async def ensure_cardholder(self):
@@ -224,6 +225,7 @@ class AirwallexClient:
                 body["transaction_failure_reason"] = "TRANSACTION_BLOCKED"
         d = await self._call("POST", "/simulation/issuing/create", body)
         t = self._txn(d, card_id, "AUTHORIZATION")
+        self._lifecycle_currency[t.id] = currency
         if relay is not None and relay.get("response_status") != "AUTHORIZED":
             t.status, t.failure_reason = "FAILED", relay.get("status_reason") or "REMOTE_AUTH_DECLINED"
         return t
@@ -248,6 +250,14 @@ class AirwallexClient:
         d = await self._lifecycle(txn_id, "reverse", amount)
         t = self._txn(d, d.get("card_id", ""), "REVERSAL_AUTH")
         t.status = "APPROVED"
+        return t
+
+    async def simulate_refund(self, txn_id, amount):
+        d = await self._call("POST", "/simulation/issuing/refund", {
+            "card_transaction_lifecycle_id": txn_id, "transaction_amount": _num(amount),
+            "transaction_currency": self._lifecycle_currency.get(txn_id, "USD")})
+        t = self._txn(d, d.get("card_id", ""), "REFUND")
+        t.transaction_type, t.status = "REFUND", "APPROVED"
         return t
 
     async def card_transactions(self, card_id):

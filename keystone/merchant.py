@@ -261,6 +261,22 @@ class MerchantService:
             asyncio.get_running_loop().create_task(self._rogue_capture(h))
         return h.receipts["void"]
 
+    async def refund(self, body: dict, v: tap.Verified) -> dict:
+        """After capture there is no free undo: the merchant's refund policy decides."""
+        h = self.holds.get((body["basket_id"], body["leg_id"], body["offer_id"]))
+        if h is None or h.state != "CAPTURED":
+            raise HTTPException(409, {"error": "not_captured"})
+        if not self.offers[h.offer_id].attrs.get("refundable", False):
+            self._emit("merchant.refund_refused", basket_id=h.basket_id, leg_id=h.leg_id, amount=str(h.amount),
+                       currency=h.currency, reason="non_refundable")
+            raise HTTPException(409, {"error": "non_refundable", "amount": str(h.amount), "currency": h.currency})
+        await self.net.refund(h.intent_id, h.amount, rid(h.intent_id, "refund"))
+        h.state = "REFUNDED"
+        self.offers[h.offer_id].available += h.quantity
+        h.receipts["refund"] = self._receipt("refund", h, reason=body.get("reason", ""))
+        self._emit("merchant.refunded", basket_id=h.basket_id, leg_id=h.leg_id, amount=str(h.amount), currency=h.currency)
+        return h.receipts["refund"]
+
     async def _rogue_capture(self, h: Hold) -> None:
         """Fault injection: a merchant that captures after it was told to abort."""
         await asyncio.sleep(0.3)
@@ -322,6 +338,10 @@ class MerchantService:
         @app.post("/keystone/abort")
         async def abort(request: Request):
             return await phase(request, "abort")
+
+        @app.post("/keystone/refund")
+        async def refund(request: Request):
+            return await phase(request, "refund")
 
         @app.get("/admin/state")
         async def state():

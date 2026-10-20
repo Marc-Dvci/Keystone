@@ -97,3 +97,45 @@ def mandate_lisbon(mandate_id: str = "mnd_lisbon_q4") -> Mandate:
                                                        Cond(attr="rating", op="ge", value="4.5")],
                                               max_price=D("650.00"))),
         ])
+
+
+def merchants_hardware() -> list[dict]:
+    """A 500-unit pilot run of a handheld device: chips, boards and screens from three suppliers."""
+    def o(mid, oid, title, price, ccy, avail, **attrs):
+        return Offer(merchant_id=mid, offer_id=oid, leg_kind="component", title=title, unit_price=D(price),
+                     currency=ccy, mcc=5065, available=avail, attrs={"reservation_minutes": 240, **attrs})
+    return [
+        dict(id="corvid-semi", name="Corvid Semiconductors", port=8111, mcc=5065, currency="USD", ttl_min=240,
+             kinds=["component"], offers=[o("corvid-semi", "MCU-R7", "R7 microcontroller, reel", "3.10", "USD", 600,
+                                            part="mcu", grade="industrial", refundable=False)]),
+        dict(id="northbridge", name="Northbridge Components", port=8112, mcc=5065, currency="USD", ttl_min=240,
+             kinds=["component"], offers=[o("northbridge", "MCU-R7-NB", "R7 microcontroller, cut tape", "3.35", "USD",
+                                            5000, part="mcu", grade="industrial", refundable=True)]),
+        dict(id="lianfa-pcb", name="Lianfa PCB", port=8113, mcc=5065, currency="CNY", ttl_min=240, kinds=["component"],
+             offers=[o("lianfa-pcb", "PCB-4L", "4-layer main board, assembled", "18.50", "CNY", 700, part="pcb",
+                       layers=4, refundable=False)]),
+        dict(id="huaxin-pcb", name="Huaxin Electronics", port=8114, mcc=5065, currency="CNY", ttl_min=240,
+             kinds=["component"], offers=[o("huaxin-pcb", "PCB-4L-HX", "4-layer main board, assembled", "19.80", "CNY",
+                                            3000, part="pcb", layers=4, refundable=False)]),
+        dict(id="lumatek", name="Lumatek Displays", port=8115, mcc=5065, currency="EUR", ttl_min=240,
+             kinds=["component"], offers=[o("lumatek", "LCD-24", "2.4 in IPS display", "6.40", "EUR", 550, part="lcd",
+                                            refundable=False)]),
+        dict(id="rhein-optics", name="Rhein Optics", port=8116, mcc=5065, currency="EUR", ttl_min=240,
+             kinds=["component"], offers=[o("rhein-optics", "LCD-24-RO", "2.4 in IPS display", "7.10", "EUR", 300,
+                                            part="lcd", refundable=True)]),
+    ]
+
+
+def mandate_hardware(mandate_id: str = "mnd_pilot_500") -> Mandate:
+    now = CLOCK.now().replace(microsecond=0)
+    def leg(leg_id, title, ccy, max_price, part, sub_max):
+        return LegSpec(leg_id=leg_id, kind="component", title=title, currency=ccy, mcc=5065, quantity=500,
+                       max_price=D(max_price), require=[Cond(attr="part", op="eq", value=part)],
+                       substitution=Substitution(allowed=True, require=[Cond(attr="part", op="eq", value=part)],
+                                                 max_price=D(sub_max)))
+    return Mandate(mandate_id=mandate_id, principal=Principal(name="COO, Halyard Devices", organisation="Halyard Devices"),
+                   purpose="Parts for a 500-unit pilot run; useless unless all three arrive", home_currency="USD",
+                   cap=D("7000.00"), atomic=True, commit_by=now + timedelta(hours=6),
+                   legs=[leg("mcu", "500 R7 microcontrollers", "USD", "1600.00", "mcu", "1700.00"),
+                         leg("pcb", "500 assembled main boards", "CNY", "9500.00", "pcb", "9950.00"),
+                         leg("lcd", "500 2.4 in displays", "EUR", "3300.00", "lcd", "3600.00")])

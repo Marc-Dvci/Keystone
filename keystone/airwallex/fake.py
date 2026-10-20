@@ -137,6 +137,23 @@ class FakeAirwallex:
             self.intent_meta[it.id]["cancelled_at"] = self.clock.now()
         return self._remember(request_id, fp, it)
 
+    async def refund(self, intent_id, amount, request_id, reason="keystone_compensation"):
+        self.calls.append(("POST", "/pa/refunds/create"))
+        fp = f"refund:{intent_id}:{amount}"
+        if (r := self._idem(request_id, fp)) is not None:
+            return r
+        it = self._get(intent_id)
+        if it.status != SUCCEEDED:
+            raise AirwallexError("invalid_status_for_operation", "refund needs a SUCCEEDED intent")
+        meta = self.intent_meta[it.id]
+        done = meta.get("refunded", Decimal(0))
+        amount = quantize(amount, it.currency)
+        if done + amount > it.captured_amount:
+            raise AirwallexError("validation_error", "refund exceeds captured amount")
+        meta["refunded"] = done + amount
+        res = {"id": self._id("rfd"), "payment_intent_id": intent_id, "amount": amount, "status": "RECEIVED"}
+        return self._remember(request_id, fp, res)
+
     async def get_intent(self, intent_id):
         it = self._get(intent_id)
         self._expire(it)
@@ -245,6 +262,16 @@ class FakeAirwallex:
                       auth.merchant_name, raw={"authorization": txn_id})
         self.txns[rev.id] = rev
         return rev
+
+    async def simulate_refund(self, txn_id, amount):
+        self.calls.append(("POST", "/simulation/issuing/refund"))
+        auth = self.txns[txn_id]
+        amount = quantize(amount, auth.currency)
+        self.balances_[auth.currency] = self.balances_.get(auth.currency, Decimal(0)) + amount
+        t = CardTxn(self._id("txn"), auth.card_id, "REFUND", "APPROVED", amount, auth.currency, auth.mcc,
+                    auth.merchant_name, raw={"authorization": txn_id})
+        self.txns[t.id] = t
+        return t
 
     async def card_transactions(self, card_id):
         return [t for t in self.txns.values() if t.card_id == card_id]

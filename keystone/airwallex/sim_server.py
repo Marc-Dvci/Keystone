@@ -129,6 +129,22 @@ def build_app(fake: FakeAirwallex | None = None) -> FastAPI:
         except AirwallexError as e:
             return err(e)
 
+    @app.post("/api/v1/pa/refunds/create")
+    async def refund(b: dict):
+        try:
+            r = await fake.refund(b["payment_intent_id"], Decimal(str(b["amount"])), b["request_id"], b.get("reason", ""))
+        except AirwallexError as e:
+            return err(e)
+        return JSONResponse({**r, "amount": _n(r["amount"])}, 201)
+
+    @app.post("/api/v1/simulation/issuing/refund")
+    async def sim_refund(b: dict):
+        tid = lifecycles.get(b.get("card_transaction_lifecycle_id", ""))
+        if tid is None:
+            return JSONResponse({"code": "not_found", "message": "lifecycle"}, 404)
+        t = await fake.simulate_refund(tid, Decimal(str(b["transaction_amount"])))
+        return _event(t, b["card_transaction_lifecycle_id"])
+
     @app.post("/api/v1/issuing/cardholders/create")
     async def cardholder(b: dict):
         cid = await fake.ensure_cardholder()

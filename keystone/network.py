@@ -99,3 +99,11 @@ class Network:
             self.bus.emit("issuer.reversal", "issuer", card_id=link.card_id, txn=rev.id, amount=str(link.amount),
                           currency=link.currency, merchant=link.merchant)
         return it
+
+    async def refund(self, intent_id: str, amount: Decimal, request_id: str) -> dict:
+        link = self.links[intent_id]
+        r = await self.acq.refund(intent_id, amount, request_id)
+        t = await self.iss.simulate_refund(link.auth_txn_id, amount)
+        self.bus.emit("issuer.refund", "issuer", card_id=link.card_id, txn=t.id, amount=str(amount),
+                      currency=link.currency, merchant=link.merchant)
+        return r

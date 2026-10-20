@@ -473,6 +473,8 @@ class Coordinator:
     async def _commit_leg(self, basket_id, lr: LegRun, commit_digest: str, retries: int = 4) -> bool:
         body = {"basket_id": basket_id, "leg_id": lr.spec.leg_id, "offer_id": lr.receipt["receipt"]["offer_id"],
                 "amount": lr.receipt["receipt"]["amount"], "commit_digest": commit_digest}
+        if self.crash_after == f"commit:{lr.spec.leg_id}":
+            raise CoordinatorCrash(lr.spec.leg_id)
         for i in range(retries):
             try:
                 r = await self._phase(lr.merchant, "commit", body)

@@ -3,20 +3,16 @@ with the same JSON shapes, backed by ``FakeAirwallex``. It lets the whole system
 ``AirwallexClient``, run without sandbox credentials. It is a stand-in, not Airwallex."""
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import os
-import time
 import uuid
 from decimal import Decimal
 
-import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ..clock import CLOCK
 from .base import AirwallexError, CardDetails, Controls
+from ..remote_auth import Caller
 from .fake import FakeAirwallex
 
 
@@ -38,27 +34,6 @@ def _event(t, lifecycle: str) -> dict:
                 t.transaction_type, t.transaction_type),
             "transaction_amount": _n(t.amount), "transaction_currency": t.currency,
             "merchant": {"category_code": f"{t.mcc:04d}", "name": t.merchant_name.strip()}}
-
-
-class RemoteAuthCaller:
-    """Calls a remote-authorization URL the way Airwallex does (v2 payload, x-nonce, base64 HMAC)."""
-
-    def __init__(self, url: str, secret: str, http: httpx.AsyncClient | None = None):
-        self.url, self.secret = url, secret
-        self.http = http or httpx.AsyncClient(timeout=2.5)
-
-    async def __call__(self, req: dict) -> dict:
-        nonce = f"{int(time.time() * 1000)}.{uuid.uuid4().hex[:12]}"
-        sig = base64.b64encode(hmac.new(self.secret.encode(), nonce.encode(), hashlib.sha256).digest()).decode()
-        body = {"version": 2, "card_transaction_event_id": str(uuid.uuid4()), **req}
-        try:
-            r = await self.http.post(self.url, json=body, headers={"x-nonce": nonce, "x-signature": sig})
-            d = r.json()
-            if r.status_code != 200 or d.get("card_transaction_event_id") != body["card_transaction_event_id"]:
-                return {"response_status": "DECLINED", "status_reason": "REMOTE_AUTH_INVALID_RESPONSE"}
-            return d
-        except (httpx.HTTPError, ValueError):
-            return {"response_status": "DECLINED", "status_reason": "REMOTE_AUTH_TIMEOUT"}  # default_action DECLINED
 
 
 def build_app(fake: FakeAirwallex | None = None) -> FastAPI:
@@ -244,13 +219,16 @@ def build_app(fake: FakeAirwallex | None = None) -> FastAPI:
     @app.post("/api/v1/fx/quotes/create")
     async def quote(b: dict):
         try:
-            q = await fake.quote(b["sell_currency"], b["buy_currency"], Decimal(str(b["buy_amount"])), b["validity"])
+            q = await fake.quote(b["sell_currency"], b["buy_currency"],
+                                 Decimal(str(b["buy_amount"])) if "buy_amount" in b else None, b["validity"],
+                                 sell_amount=Decimal(str(b["sell_amount"])) if "sell_amount" in b else None)
         except AirwallexError as e:
             return err(e)
         return JSONResponse({"quote_id": q.quote_id, "sell_currency": q.sell_currency, "buy_currency": q.buy_currency,
                              "buy_amount": _n(q.buy_amount), "sell_amount": _n(q.sell_amount),
                              "client_rate": float(q.client_rate), "valid_to_at": q.valid_to.isoformat(),
-                             "validity": b["validity"], "usage": "SINGLE_USE"}, 201)
+                             "validity": b["validity"], "usage": "SINGLE_USE",
+                             "dealt_currency": b["sell_currency"] if "sell_amount" in b else b["buy_currency"]}, 201)
 
     @app.post("/api/v1/fx/conversions/create")
     async def convert(b: dict):
@@ -278,7 +256,7 @@ def build_app(fake: FakeAirwallex | None = None) -> FastAPI:
     @app.post("/sim/remote_auth")
     async def set_remote_auth(b: dict):
         """Configure the remote-authorization URL, like POST /issuing/config/update remote_auth."""
-        fake.remote_auth = RemoteAuthCaller(b["url"], b["secret"]) if b.get("enabled") else None
+        fake.remote_auth = Caller(b["url"], b["secret"]) if b.get("enabled") else None
         return {"ok": True}
 
     return app

@@ -108,6 +108,7 @@ class MerchantService:
         self.aborted: set[tuple[str, str, str]] = set()
         self.faults: list[Fault] = []
         self.rogue = False  # tries to capture after an abort (fault injection)
+        self.sell_on_prepare: dict[str, int] = {}  # another buyer takes this stock as the agent arrives
         self.latency_s = 0.0
         self.app = self._build()
 
@@ -174,6 +175,10 @@ class MerchantService:
         offer = self.offers.get(body["offer_id"])
         if offer is None:
             raise HTTPException(404, {"error": "unknown_offer"})
+        if offer.offer_id in self.sell_on_prepare:
+            offer.available = self.sell_on_prepare.pop(offer.offer_id)
+            self._emit("merchant.inventory_taken", offer_id=offer.offer_id, available=offer.available,
+                       note="another buyer took the stock moments before this request")
         qty = int(body["quantity"])
         amount = quantize(body["amount"], body["currency"])
         if body["currency"] != offer.currency:
@@ -357,6 +362,11 @@ class MerchantService:
             svc._emit("merchant.inventory", offer_id=o.offer_id, available=o.available)
             return {"ok": True}
 
+        @app.post("/admin/sell_on_prepare")
+        async def sell_on_prepare(payload: dict):
+            svc.sell_on_prepare[payload["offer_id"]] = int(payload.get("left", 0))
+            return {"ok": True}
+
         @app.post("/admin/fault")
         async def fault(payload: dict):
             svc.faults.append(Fault(payload["phase"], payload.get("mode", "error"), int(payload.get("count", 1))))
@@ -386,4 +396,5 @@ class MerchantService:
         self.aborted.clear()
         self.faults.clear()
         self.rogue = False
+        self.sell_on_prepare.clear()
         self.latency_s = 0.0

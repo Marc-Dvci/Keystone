@@ -71,13 +71,19 @@ async def _one(scenario: str, seed: int, agent: str, p: dict, tmp: str) -> dict:
     w.coordinator.escalate_hook = answer
     mandate = mk_mandate()
     t = time.perf_counter()
-    if agent == "keystone":
-        rep = await w.coordinator.run(mandate, {"kind": "sim"})
-    else:
-        c = w.coordinator
-        rep = await SequentialAgent(journal=c.journal, agent_key=c.key, merchants=c.merchants, fx=c.fx,
-                                    issuing=c.cards.iss, network=c.cards.net, ledger=c.ledger, http=c.http,
-                                    bus=bus).run(mandate, {})
+    try:
+        if agent == "keystone":
+            rep = await w.coordinator.run(mandate, {"kind": "sim"})
+        else:
+            c = w.coordinator
+            rep = await SequentialAgent(journal=c.journal, agent_key=c.key, merchants=c.merchants, fx=c.fx,
+                                        issuing=c.cards.iss, network=c.cards.net, ledger=c.ledger, http=c.http,
+                                        bus=bus).run(mandate, {})
+    except Exception as e:  # counted, never hidden
+        rep = {"status": f"ERROR {type(e).__name__}: {e}"[:200]}
+    finally:
+        w.journal.close()
+        await w.http.aclose()
     ms = (time.perf_counter() - t) * 1000
     kinds = [e.kind for e in bus.history]
     out = {"scenario": scenario, "seed": seed, "agent": agent, "status": rep["status"],
@@ -86,8 +92,6 @@ async def _one(scenario: str, seed: int, agent: str, p: dict, tmp: str) -> dict:
            "refunds": int(rep.get("refunds", 0)), "escalations": kinds.count("escalation.opened"),
            "substitutions": kinds.count("decision.substitute"), "voids": kinds.count("merchant.voided"),
            "void_ms": rep.get("void_ms"), "ms": ms, "captures": kinds.count("merchant.captured")}
-    w.journal.close()
-    await w.http.aclose()
     return out
 
 
@@ -99,13 +103,15 @@ def summarise(rows: list[dict]) -> dict:
             if not rs:
                 continue
             done = [r for r in rs if r["status"] in ("COMMITTED", "COMPLETED")]
-            failed = [r for r in rs if r not in done]
+            errors = [r for r in rs if r["status"].startswith("ERROR")]
+            failed = [r for r in rs if r not in done and r not in errors]
             money_moved_on_failure = [r for r in failed if r["charged"] > 0]
             out[f"{scenario}/{agent}"] = {
                 "baskets": len(rs),
                 "completed": len(done),
                 "completion_rate": round(len(done) / len(rs), 4),
                 "failed_baskets": len(failed),
+                "errors": len(errors),
                 "failed_with_money_moved": len(money_moved_on_failure),
                 "stranded_usd": str(sum((r["stranded"] for r in rs), Decimal(0))),
                 "refunds_needed": sum(r["refunds"] for r in rs),
@@ -125,7 +131,7 @@ def summarise(rows: list[dict]) -> dict:
 async def run(n: int, seed: int, scenarios: list[str], scale: float = 1.0) -> dict:
     p = {k: min(1.0, v * scale) for k, v in ASSUMPTIONS["race_probability_per_leg"].items()}
     rows = []
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         for scenario in scenarios:
             for i in range(n):
                 s = seed * 100000 + i

@@ -68,6 +68,7 @@ class SequentialAgent(Coordinator):
                 break
         await self.cards.close_all(basket_id)
         if failed_leg is None:
+            self._emit("seq.unwound", basket_id=basket_id, status="COMPLETED", charged_home=str(quantize(spent_home, "USD")))
             return {"basket_id": basket_id, "status": "COMPLETED", "charged_home": str(quantize(spent_home, "USD")),
                     "stranded_home": "0.00", "refunded_home": "0.00", "fx_loss_home": "0.00", "refunds": 0,
                     "elapsed_ms": int((time.perf_counter() - t0) * 1000)}
@@ -84,8 +85,7 @@ class SequentialAgent(Coordinator):
                 if lr.quote is not None:
                     # Money comes back in the leg currency and is converted home at today's rate.
                     amt = Decimal(lr.receipt["receipt"]["amount"])
-                    back = await self.fx.quote(lr.spec.currency, mandate.home_currency,
-                                               await self._home_back(lr, amt), "MIN_1")
+                    back = await self.fx.quote(lr.spec.currency, mandate.home_currency, None, "MIN_1", sell_amount=amt)
                     conv = await self.fx.convert(back, str(uuid.uuid4()))
                     refunded += conv.buy_amount
                     fx_loss += lr.home_amount - conv.buy_amount
@@ -99,8 +99,3 @@ class SequentialAgent(Coordinator):
                "refunds": refunds, "elapsed_ms": int((time.perf_counter() - t0) * 1000)}
         self._emit("seq.unwound", **rep)
         return rep
-
-    async def _home_back(self, lr: LegRun, amt: Decimal) -> Decimal:
-        # Size the home-currency buy so that the whole refunded foreign amount is sold.
-        rate = await self.fx.spot(lr.spec.currency, "USD")
-        return quantize(amt * rate * Decimal("0.9975"), "USD")

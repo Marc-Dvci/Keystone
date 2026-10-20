@@ -258,6 +258,8 @@ class FakeAirwallex:
         auth = self.txns[txn_id]
         amount = quantize(amount, auth.currency)
         auth.raw["reversed"] = auth.raw.get("reversed", Decimal(0)) + amount
+        if auth.raw["reversed"] >= auth.amount:
+            auth.status = "REVERSED"
         rev = CardTxn(self._id("txn"), auth.card_id, "REVERSAL", "APPROVED", amount, auth.currency, auth.mcc,
                       auth.merchant_name, raw={"authorization": txn_id})
         self.txns[rev.id] = rev
@@ -293,12 +295,17 @@ class FakeAirwallex:
     async def spot(self, sell_currency, buy_currency):
         return self._spot(sell_currency, buy_currency)
 
-    async def quote(self, sell_currency, buy_currency, buy_amount, validity):
+    async def quote(self, sell_currency, buy_currency, buy_amount, validity, sell_amount=None):
         self.calls.append(("POST", "/fx/quotes/create"))
         rate = self._spot(sell_currency, buy_currency) * Decimal("0.9975")  # client rate carries a spread
         rate = rate.quantize(Decimal("0.000001"))
-        sell = quantize(Decimal(buy_amount) / rate, sell_currency)
-        q = Quote(self._id("quote"), sell_currency, buy_currency, quantize(buy_amount, buy_currency), sell, rate,
+        if sell_amount is not None:
+            sell = quantize(sell_amount, sell_currency)
+            buy = quantize(sell * rate, buy_currency)
+        else:
+            buy = quantize(buy_amount, buy_currency)
+            sell = quantize(Decimal(buy_amount) / rate, sell_currency)
+        q = Quote(self._id("quote"), sell_currency, buy_currency, buy, sell, rate,
                   self.clock.now() + VALIDITY[validity])
         self.quotes[q.quote_id] = q
         return q

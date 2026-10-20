@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keystone</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M4 20 L9 4 H15 L20 20 Z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9.6 20 L12 12 L14.4 20" fill="currentColor"/></svg></span>
+    <span class="name">Keystone</span>
+    <span class="tag">All-or-nothing agent purchases on Visa</span>
+  </div>
+  <nav>
+    <button class="scen" data-s="lisbon">Lisbon trip</button>
+    <button class="scen" data-s="hardware">Pilot run</button>
+    <span id="mode" class="mode"></span>
+  </nav>
+</header>
+
+<main>
+  <section id="basket" class="col">
+    <h2>The basket</h2>
+    <p id="purpose" class="purpose"></p>
+    <dl class="cap"><dt>Cap</dt><dd id="cap"></dd><dt>Rule</dt><dd>All or nothing</dd><dt>Commit by</dt><dd id="commitby"></dd></dl>
+    <ol id="legspec" class="legspec"></ol>
+    <div class="digest">Mandate digest <code id="digest"></code></div>
+
+    <h3>Scenario events</h3>
+    <div id="faults" class="faults"></div>
+
+    <div class="actions">
+      <button id="approve" class="primary">Approve with passkey</button>
+      <button id="demo" class="link">Use the demo passkey</button>
+      <button id="register" class="link">Register a passkey on this device</button>
+    </div>
+    <div class="actions">
+      <button id="seq" class="secondary">Run a sequential agent on the same events</button>
+    </div>
+    <p id="msg" class="msg"></p>
+  </section>
+
+  <section id="legs" class="col wide">
+    <h2>Legs <span id="bid" class="bid"></span></h2>
+    <div class="track-head"><span>Leg</span><span>Merchant and offer</span><span>Amount</span><span class="stages"><i>card</i><i>hold</i><i>capture</i></span></div>
+    <div id="legrows"></div>
+    <div id="outcome" class="outcome"></div>
+    <div id="seqout" class="seqout"></div>
+
+    <div class="ledgers">
+      <div>
+        <h3>Airwallex <span id="awxmode" class="sub"></span></h3>
+        <table id="intents"><thead><tr><th>Payment intent</th><th>Leg</th><th>Status</th><th class="r">Amount</th></tr></thead><tbody></tbody></table>
+        <table id="cards"><thead><tr><th>Leg card</th><th>Card ledger</th><th>Status</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div>
+        <h3>Visa</h3>
+        <dl class="visa">
+          <dt>TAP requests verified</dt><dd id="tapok">0</dd>
+          <dt>TAP requests refused</dt><dd id="tapno">0</dd>
+          <dt>VIC instruction</dt><dd id="vicid">none</dd>
+          <dt>Credentials released</dt><dd id="viccred">0</dd>
+          <dt>Confirmations</dt><dd id="vicconf">0</dd>
+          <dt>Rule checks</dt><dd id="rules">0</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section id="log" class="col">
+    <h2>What happened</h2>
+    <ol id="events"></ol>
+  </section>
+</main>
+
+<aside id="phone" class="phone" hidden>
+  <div class="ph-top">Keystone needs a decision</div>
+  <p id="ph-why" class="ph-why"></p>
+  <div id="ph-options"></div>
+  <button id="ph-abort" class="link">Abort the basket at no cost</button>
+</aside>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

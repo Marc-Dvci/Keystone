@@ -47,6 +47,16 @@ class Bus:
     def add_sink(self, fn) -> None:
         self._sinks.append(fn)
 
+    def load(self, path: str, keep: int = 2000) -> None:
+        """Reload the event history a previous process wrote, so the console keeps its timeline."""
+        import os
+        if not os.path.exists(path):
+            return
+        with open(path, encoding="utf-8") as f:
+            rows = [json.loads(l) for l in f if l.strip()][-keep:]
+        for r in rows:
+            self.history.append(Event(r["kind"], r["actor"], r["data"], r["at"], seq=len(self.history) + 1))
+
     def jsonl_sink(self, path: str):
         def write(ev: Event) -> None:
             with open(path, "a", encoding="utf-8") as f:

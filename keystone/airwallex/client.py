@@ -271,17 +271,21 @@ class AirwallexClient:
         return out
 
     # ------------------------------------------------------------------ fx
-    async def quote(self, sell_currency, buy_currency, buy_amount, validity):
-        d = await self._call("POST", "/fx/quotes/create", {"sell_currency": sell_currency, "buy_currency": buy_currency,
-                                                           "buy_amount": _num(quantize(buy_amount, buy_currency)),
-                                                           "validity": validity})
+    async def quote(self, sell_currency, buy_currency, buy_amount, validity, sell_amount=None):
+        body = {"sell_currency": sell_currency, "buy_currency": buy_currency, "validity": validity}
+        if sell_amount is not None:
+            body["sell_amount"] = _num(quantize(sell_amount, sell_currency))
+        else:
+            body["buy_amount"] = _num(quantize(buy_amount, buy_currency))
+        d = await self._call("POST", "/fx/quotes/create", body)
         return Quote(d["quote_id"], d["sell_currency"], d["buy_currency"], Decimal(str(d["buy_amount"])),
                      Decimal(str(d["sell_amount"])), Decimal(str(d["client_rate"])), _dt(d["valid_to_at"]), d)
 
     async def convert(self, quote: Quote, request_id):
         d = await self._call("POST", "/fx/conversions/create", {
             "quote_id": quote.quote_id, "sell_currency": quote.sell_currency, "buy_currency": quote.buy_currency,
-            "buy_amount": str(quote.buy_amount), "request_id": request_id})
+            **({"sell_amount": str(quote.sell_amount)} if quote.raw.get("dealt_currency") == quote.sell_currency
+               else {"buy_amount": str(quote.buy_amount)}), "request_id": request_id})
         return Conversion(d.get("conversion_id", d.get("id", "")), quote.quote_id, d["sell_currency"], d["buy_currency"],
                           Decimal(str(d["sell_amount"])), Decimal(str(d["buy_amount"])), Decimal(str(d["client_rate"])),
                           d.get("status", ""), d)

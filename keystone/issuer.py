@@ -116,6 +116,7 @@ class LegCards:
         self.ledger = ledger
         self.bus = bus
         self.by_leg: dict[tuple[str, str], tuple[Card, CardDetails]] = {}
+        self.on_issue = None  # callback(basket_id, leg_id, card_id, last4), used to journal every card
 
     async def issue(self, basket_id: str, mandate: Mandate, leg: LegSpec, rate_to_home: Decimal,
                     limit: Decimal | None = None) -> tuple[Card, CardDetails]:
@@ -136,6 +137,8 @@ class LegCards:
         self.ledger.bind_pan(card.id, details.number)
         self.ledger.bind(basket_id, leg.leg_id, card.id, leg.currency, rate_to_home)
         self.by_leg[(basket_id, leg.leg_id)] = (card, details)
+        if self.on_issue:
+            self.on_issue(basket_id, leg.leg_id, card.id, details.number[-4:])
         self.bus.emit("issuer.card_issued", "issuer", basket_id=basket_id, leg_id=leg.leg_id, card_id=card.id,
                       last4=details.number[-4:], limit=str(controls.per_transaction_limit), currency=leg.currency,
                       mcc=leg.mcc, active_to=mandate.commit_by.isoformat())

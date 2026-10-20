@@ -92,6 +92,7 @@ class Coordinator:
         self.merchants = merchants
         self.fx = fx
         self.cards = LegCards(issuing, network, ledger, bus)
+        self.cards.on_issue = lambda b, l, cid, last4: journal.append(b, "card.issued", l, card_id=cid, last4=last4)
         self.ledger = ledger
         self.http = http
         self.bus = bus
@@ -313,7 +314,9 @@ class Coordinator:
             if home <= room:
                 lr.home_amount = home
                 rate = (home / o.total(lr.spec.quantity)) if lr.quote else Decimal(1)
-                self.ledger.set_rate(basket_id, lr.spec.leg_id, rate)
+                if (basket_id, lr.spec.leg_id) in self.cards.by_leg:
+                    # One card per attempt: the card that met the failed merchant is closed.
+                    await self.cards.issue(basket_id, mandate, lr.spec, rate)
                 self.journal.append(basket_id, "decision.substitute", lr.spec.leg_id, merchant=m.merchant_id,
                                     offer=o.offer_id, substitute=f.substitute)
                 self._emit("decision.substitute", basket_id=basket_id, leg_id=lr.spec.leg_id, merchant=m.merchant_id,
@@ -569,6 +572,7 @@ class Coordinator:
                 cd = next(e["data"]["commit_digest"] for e in entries if e["kind"] == "decision.commit")
                 for lr in legs.values():
                     await self._commit_leg(basket_id, lr, cd)
+                await self._close_logged_cards(basket_id, entries)
                 self.journal.set_status(basket_id, "COMMITTED")
                 self.journal.append(basket_id, "basket.done", status="COMMITTED", recovered=True)
                 out.append({"basket_id": basket_id, "status": "COMMITTED", "recovered": True})
@@ -579,7 +583,7 @@ class Coordinator:
                 t = time.perf_counter()
                 await asyncio.gather(*(self._abort_leg(basket_id, lr, "presumed_abort") for lr in legs.values()))
                 void_ms = int((time.perf_counter() - t) * 1000)
-                await self.cards.close_all(basket_id)
+                await self._close_logged_cards(basket_id, entries)
                 if basket_id in self.ledger.baskets:
                     self.ledger.close(basket_id, "ABORTED")
                 self.journal.set_status(basket_id, "ABORTED")
@@ -589,6 +593,18 @@ class Coordinator:
                 out.append({"basket_id": basket_id, "status": "ABORTED", "recovered": True, "void_ms": void_ms,
                             "elapsed_ms": int((time.perf_counter() - t0) * 1000)})
         return out
+
+
+    async def _close_logged_cards(self, basket_id: str, entries: list[dict]) -> None:
+        """After a restart the card objects are gone from memory; the log still names every card."""
+        for e in entries:
+            if e["kind"] == "card.issued":
+                try:
+                    await self.cards.iss.set_card_status(e["data"]["card_id"], "CLOSED")
+                    self._emit("issuer.card_closed", basket_id=basket_id, leg_id=e["leg_id"], card_id=e["data"]["card_id"],
+                               recovered=True)
+                except Exception as ex:
+                    self._emit("recovery.card_close_failed", card_id=e["data"]["card_id"], error=str(ex)[:120])
 
 
 class CoordinatorCrash(Exception):

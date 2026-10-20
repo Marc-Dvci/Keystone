@@ -180,6 +180,12 @@ class RegistryDirectory:
         data = r.json() if r.status_code == 200 else None
         if data is not None and data.get("is_active", "true") != "true":
             data = None
+        if data is not None and data.get("agent_id") is not None:
+            # Visa's sample registry answers GET /keys/{id} even after the agent itself was deactivated,
+            # so the agent's status is checked as well. Fail closed.
+            a = await self.client.get(f"{self.base_url}/agents/{data['agent_id']}")
+            if a.status_code != 200 or a.json().get("is_active") != "true":
+                data = None
         self._cache[key_id] = (time.time(), data)
         return data
 

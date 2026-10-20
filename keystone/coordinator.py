@@ -102,6 +102,7 @@ class Coordinator:
         self.phase_timeout_s = phase_timeout_s
         self.escalation_timeout_s = escalation_timeout_s
         self.escalations: dict[str, Escalation] = {}
+        self.browse_errors: dict[str, list[str]] = {}
         self.vic = vic
         self.instructions: dict[str, str] = {}  # basket_id -> VIC instruction id
         self.crash_after: str | None = None  # fault injection: "prepare:<leg_id>" stops the coordinator there
@@ -126,9 +127,17 @@ class Coordinator:
     async def browse(self, kind: str) -> list[tuple[MerchantRef, Offer]]:
         out: list[tuple[MerchantRef, Offer]] = []
 
+        self.browse_errors[kind] = []
+
         async def one(m: MerchantRef):
             try:
                 r = await self._signed("GET", f"{m.base_url}/catalog", None, tap.TAG_BROWSE)
+                if r.status_code != 200:
+                    code = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}).get(
+                        "error", f"http_{r.status_code}")
+                    self.browse_errors[kind].append(f"{m.merchant_id}: {code}")
+                    self._emit("browse.refused", merchant=m.merchant_id, code=code)
+                    return
                 for o in r.json()["offers"]:
                     off = Offer(**o)
                     if off.leg_kind == kind:
@@ -341,7 +350,12 @@ class Coordinator:
         options.sort(key=lambda x: Decimal(x["home"]))
         options = options[:3]
         if not options:
-            lr.history.append({"why": f"no offer for {lr.spec.leg_id} fits the rules or the cap"})
+            refused = self.browse_errors.get(lr.spec.kind) or []
+            if not offers and refused:
+                why = f"every merchant for {lr.spec.leg_id} refused the agent ({'; '.join(refused)})"
+            else:
+                why = f"no offer for {lr.spec.leg_id} fits the rules or the cap"
+            lr.history.append({"why": why})
             self._emit("decision.no_option", basket_id=basket_id, leg_id=lr.spec.leg_id)
             return False
         choice = await self._escalate(basket_id, mandate, lr, options)

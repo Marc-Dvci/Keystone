@@ -86,7 +86,7 @@ class Coordinator:
     def __init__(self, *, journal: Journal, agent_key: tap.AgentKey, merchants: list[MerchantRef], fx, issuing,
                  network, ledger: BasketLedger, http: httpx.AsyncClient, bus: Bus = BUS,
                  directory_url: str | None = None, advisor=None, escalate: Escalator | None = None,
-                 phase_timeout_s: float = 6.0, escalation_timeout_s: float = 300.0):
+                 phase_timeout_s: float = 6.0, escalation_timeout_s: float = 300.0, vic=None):
         self.journal = journal
         self.key = agent_key
         self.merchants = merchants
@@ -101,6 +101,8 @@ class Coordinator:
         self.phase_timeout_s = phase_timeout_s
         self.escalation_timeout_s = escalation_timeout_s
         self.escalations: dict[str, Escalation] = {}
+        self.vic = vic
+        self.instructions: dict[str, str] = {}  # basket_id -> VIC instruction id
         self.crash_after: str | None = None  # fault injection: "prepare:<leg_id>" stops the coordinator there
 
     # ------------------------------------------------------------------ transport
@@ -172,9 +174,16 @@ class Coordinator:
         return q.sell_amount
 
     # ------------------------------------------------------------------ run
-    async def run(self, mandate: Mandate, approval: dict, basket_id: str | None = None) -> dict:
+    async def run(self, mandate: Mandate, approval: dict, basket_id: str | None = None,
+                  instruction_id: str | None = None) -> dict:
         basket_id = basket_id or f"bkt_{uuid.uuid4().hex[:16]}"
         md = mandate.digest()
+        if self.vic is not None:
+            if instruction_id is None:
+                raise ValueError("a VIC instruction approved with a passkey is required")
+            self.instructions[basket_id] = instruction_id
+            approval = {**approval, "instruction_id": instruction_id}
+        approval = {**approval, "mandate_digest": md}
         self.journal.open_basket(basket_id, mandate.canonical_json(), approval)
         self.journal.append(basket_id, "basket.opened", mandate_digest=md)
         self._emit("basket.opened", basket_id=basket_id, mandate_digest=md, cap=f"{mandate.cap} {mandate.home_currency}",
@@ -225,8 +234,25 @@ class Coordinator:
 
     async def _prepare_leg(self, basket_id: str, mandate: Mandate, lr: LegRun) -> None:
         card, details = self.cards.by_leg[(basket_id, lr.spec.leg_id)]
+        amount = str(quantize(lr.offer.total(lr.spec.quantity), lr.spec.currency))
+        if self.vic is not None:
+            # The credential is released by the instruction service only inside this leg's mandate.
+            from fastapi import HTTPException
+            try:
+                cr = await self.vic.credentials(self.instructions[basket_id], {
+                    "clientCorrelationId": str(uuid.uuid4()),
+                    "transactionData": [{"clientReferenceInformation": {"code": lr.spec.leg_id}, "type": "PURCHASE",
+                                         "orderInformation": {"amountDetail": {"totalAmount": amount,
+                                                                               "currency": lr.spec.currency}},
+                                         "merchantInformation": {"merchantName": lr.merchant.merchant_id,
+                                                                 "merchantDescriptor": {"country": "PT",
+                                                                                        "url": lr.merchant.base_url}}}]})
+            except HTTPException as e:
+                raise PhaseError(e.status_code, e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)})
+            c = cr["keystoneCredential"]["card"]
+            details = type(details)(c["number"], c["expiry_month"], c["expiry_year"], c["cvc"], c.get("name", ""))
         body = {"basket_id": basket_id, "leg_id": lr.spec.leg_id, "offer_id": lr.offer.offer_id,
-                "quantity": lr.spec.quantity, "amount": str(quantize(lr.offer.total(lr.spec.quantity), lr.spec.currency)),
+                "quantity": lr.spec.quantity, "amount": amount,
                 "currency": lr.spec.currency, "mandate_digest": mandate.digest(),
                 "commit_by": mandate.commit_by.isoformat(),
                 "payment": {"card": {"number": details.number, "expiry_month": details.expiry_month,
@@ -366,7 +392,16 @@ class Coordinator:
                    choice=choice)
         return choice
 
+    def amendment_for(self, escalation_id: str, offer_id: str) -> dict:
+        from .vic import amendment
+        esc = self.escalations[escalation_id]
+        opt = next(o for o in esc.options if o["offer_id"] == offer_id)
+        md = self.journal.basket(esc.basket_id)["approval"].get("mandate_digest", "")
+        return amendment(esc.basket_id, md, esc.leg_id, opt)
+
     def resolve(self, escalation_id: str, offer_id: str | None, approval: dict | None = None) -> None:
+        """Close an escalation. Choosing an option needs a passkey assertion over that option's
+        amendment digest; the instruction's threshold for the leg is raised only if it verifies."""
         esc = self.escalations[escalation_id]
         if esc.future.done():
             return
@@ -374,6 +409,14 @@ class Coordinator:
             esc.future.set_result(None)
             return
         opt = next(o for o in esc.options if o["offer_id"] == offer_id)
+        if self.vic is not None:
+            from .vic import PROVIDER
+            from .canonical import b64u
+            am = self.amendment_for(escalation_id, offer_id)
+            self.vic.update(self.instructions[esc.basket_id], {
+                "clientCorrelationId": str(uuid.uuid4()), "keystone": {"amendment": am},
+                "assuranceData": [{"authenticatedIdentities": {"provider": PROVIDER, "id": (approval or {}).get("id", ""),
+                                                               "data": b64u(json.dumps(approval or {}).encode())}}]})
         esc.future.set_result({**opt, "approval": approval})
 
     # ------------------------------------------------------------------ phase two
@@ -404,6 +447,7 @@ class Coordinator:
                 failures.append(lr.spec.leg_id)
         await self.cards.close_all(basket_id)
         self.ledger.close(basket_id, "COMMITTED")
+        self._confirm(basket_id, legs)
         status = "COMMITTED" if not failures else "COMMITTED_WITH_ERRORS"
         self.journal.set_status(basket_id, "COMMITTED")
         self.journal.append(basket_id, "basket.done", status=status, failures=failures)
@@ -452,10 +496,29 @@ class Coordinator:
         void_ms = int((time.perf_counter() - t) * 1000)
         await self.cards.close_all(basket_id)
         self.ledger.close(basket_id, "ABORTED")
+        self._confirm(basket_id, legs)
         self.journal.set_status(basket_id, "ABORTED")
         self.journal.append(basket_id, "basket.done", status="ABORTED", why=why, void_ms=void_ms)
         self._emit("basket.aborted", basket_id=basket_id, why=why, voids=len(held), void_ms=void_ms)
         return self._report(basket_id, mandate, legs, "ABORTED", t0, why=why, void_ms=void_ms)
+
+    def _confirm(self, basket_id: str, legs: dict[str, LegRun]) -> None:
+        """Report each leg's outcome to the instruction service (VIC confirmations)."""
+        iid = self.instructions.get(basket_id)
+        if self.vic is None or iid is None:
+            return
+        for lr in legs.values():
+            if lr.receipt is None and lr.state not in ("VOIDED",):
+                continue
+            outcome = {"COMMITTED": "COMPLETED", "VOIDED": "CANCELLED"}.get(lr.state, lr.state)
+            r = self.vic.confirmations(iid, {"clientCorrelationId": str(uuid.uuid4()), "transactionData": [{
+                "clientReferenceInformation": {"code": lr.spec.leg_id}, "type": "PURCHASE", "keystoneOutcome": outcome,
+                "orderInformation": {"amountDetail": {"totalAmount": lr.receipt["receipt"]["amount"] if lr.receipt else "0",
+                                                      "currency": lr.spec.currency}},
+                "merchantInformation": {"merchantName": lr.merchant.merchant_id if lr.merchant else "",
+                                        "merchantDescriptor": {"country": "PT", "url": lr.merchant.base_url if lr.merchant else ""}}}]})
+            self._emit("vic.confirmation", basket_id=basket_id, leg_id=lr.spec.leg_id, outcome=outcome,
+                       signed=r["signedPayload"][:24] + "...")
 
     def _report(self, basket_id, mandate: Mandate, legs, status, t0, **extra) -> dict:
         lines = {}

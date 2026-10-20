@@ -40,9 +40,13 @@ class World:
 
     def new_coordinator(self, **kw) -> Coordinator:
         """A fresh coordinator on the same log, as after a process restart."""
+        old = self.coordinator
         self.coordinator = Coordinator(journal=Journal(self.journal.path), agent_key=self.agent_key, merchants=self.refs,
                                        fx=self.awx, issuing=self.awx, network=self.network, ledger=self.ledger,
-                                       http=self.http, bus=self.bus, **kw)
+                                       http=self.http, bus=self.bus, vic=old.vic, directory_url=old.directory_url, **kw)
+        self.coordinator.cards.by_leg = old.cards.by_leg  # card ids live at Airwallex, not in the process
+        if old.vic is not None:
+            attach_vic(old.vic, self.coordinator)
         return self.coordinator
 
     def reset(self) -> None:
@@ -52,7 +56,7 @@ class World:
 
 def build_world(*, journal_path: str, awx=None, in_process: bool = True, host: str = "127.0.0.1",
                 directory=None, directory_url: str | None = None, bus: Bus = BUS, advisor=None,
-                live: bool = False, merchant_specs: list[dict] | None = None, **coord_kw) -> World:
+                live: bool = False, merchant_specs: list[dict] | None = None, vic=None, **coord_kw) -> World:
     awx = awx or FakeAirwallex()
     ledger = BasketLedger(bus)
     network = Network(awx, awx, bus, live=live or getattr(awx, "mode", "") == "live", ledger=ledger)
@@ -76,5 +80,17 @@ def build_world(*, journal_path: str, awx=None, in_process: bool = True, host: s
     http = httpx.AsyncClient(mounts=mounts) if in_process else httpx.AsyncClient()
     journal = Journal(journal_path)
     coord = Coordinator(journal=journal, agent_key=agent_key, merchants=refs, fx=awx, issuing=awx, network=network,
-                        ledger=ledger, http=http, bus=bus, directory_url=directory_url, advisor=advisor, **coord_kw)
+                        ledger=ledger, http=http, bus=bus, directory_url=directory_url, advisor=advisor, vic=vic,
+                        **coord_kw)
+    if vic is not None:
+        attach_vic(vic, coord)
     return World(awx, network, ledger, directory, agent_key, merchants, refs, http, journal, bus, coord)
+
+
+def attach_vic(vic, coord: Coordinator) -> None:
+    async def source(iid: str, leg_id: str) -> dict:
+        basket = next(b for b, i in coord.instructions.items() if i == iid)
+        _, d = coord.cards.by_leg[(basket, leg_id)]
+        return {"number": d.number, "expiry_month": d.expiry_month, "expiry_year": d.expiry_year, "cvc": d.cvc,
+                "name": d.name}
+    vic.source = source

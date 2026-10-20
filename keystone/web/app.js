@@ -120,6 +120,8 @@ function line(e) {
     "escalation.opened": () => `Asking the person: ${d.options.length} priced options`,
     "vic.amended": () => `Instruction amended by passkey: ${d.leg_id} up to ${d.threshold}`,
     "escalation.closed": () => (d.choice ? `Person approved ${d.choice.title}` : `Person declined`),
+    "advisor.ranked": () => `${d.model} ranked ${d.allowed} offers the rules allow for ${d.leg_id}: ${d.order[0]} first`,
+    "advisor.explained": () => `${d.model} wrote the explanation; prices and rules come from the code`,
     "decision.commit": () => `Every leg held. Commit decision logged (${d.prepared_in_ms} ms)`,
     "fx.converted": () => `Converted ${d.sell} → ${d.buy} at the locked rate ${d.rate}`,
     "merchant.captured": () => `Captured ${d.amount} ${d.currency}`,

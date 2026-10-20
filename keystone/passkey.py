@@ -16,6 +16,7 @@ import os
 import secrets
 import struct
 import threading
+import time
 from dataclasses import dataclass
 
 import cbor2
@@ -151,7 +152,8 @@ class SoftAuthenticator:
     def get(self, options: dict) -> dict:
         ch = b64u_decode(options["challenge"])
         cd = self._client_data("webauthn.get", ch)
-        self.count += 1
+        # The signature counter must grow across process restarts, or the relying party rejects the assertion.
+        self.count = max(self.count + 1, int(time.time()))
         auth_data = hashlib.sha256(self.rp_id.encode()).digest() + bytes([0x05]) + struct.pack(">I", self.count)
         sig = self.key.sign(auth_data + hashlib.sha256(cd).digest(), ec.ECDSA(hashes.SHA256()))
         cid = b64u(self.cred_id)

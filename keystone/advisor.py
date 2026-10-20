@@ -4,6 +4,8 @@ coordinator only reorders candidates that ``fit()`` accepted, and shows the expl
 
 KEYSTONE_ADVISOR=1 uses Claude through the Anthropic API. KEYSTONE_ADVISOR=bedrock uses a model on Amazon
 Bedrock through the Converse API (KEYSTONE_BEDROCK_MODEL, KEYSTONE_BEDROCK_REGION, AWS_PROFILE).
+KEYSTONE_ADVISOR=gemini uses Gemini on Vertex AI (GOOGLE_CLOUD_PROJECT, KEYSTONE_GEMINI_MODEL; Gemini 3.x is
+served from the global endpoint only).
 """
 from __future__ import annotations
 
@@ -38,6 +40,7 @@ class ClaudeAdvisor:
         import anthropic
         self.client = anthropic.AsyncAnthropic()
         self.purpose = purpose
+        self.model = MODEL
 
     @staticmethod
     def _offers(offers: list[Offer]) -> list[dict]:
@@ -102,6 +105,40 @@ class BedrockAdvisor:
         return str(out.get("text", ""))
 
 
+class GeminiAdvisor:
+    """Same job on Vertex AI, with the response held to a JSON schema."""
+
+    def __init__(self, purpose: str = ""):
+        from google import genai
+        self.client = genai.Client(vertexai=True, project=os.environ["GOOGLE_CLOUD_PROJECT"],
+                                   location=os.environ.get("KEYSTONE_GEMINI_LOCATION", "global"))
+        self.model = os.environ.get("KEYSTONE_GEMINI_MODEL", "gemini-3.8-flash")
+        self.purpose = purpose
+
+    async def _ask(self, system: str, payload: dict, schema):
+        from google.genai import types
+        r = await self.client.aio.models.generate_content(
+            model=self.model, contents=json.dumps(payload),
+            # thinking tokens count against max_output_tokens, so leave room
+            config=types.GenerateContentConfig(system_instruction=system, response_mime_type="application/json",
+                                               response_schema=schema, max_output_tokens=4000, temperature=0))
+        return schema.model_validate_json(r.text)
+
+    async def rank(self, leg: LegSpec, offers: list[Offer]) -> list[str]:
+        out = await self._ask(SYSTEM, {"purpose": self.purpose, "leg": leg.model_dump(mode="json"),
+                                       "offers": ClaudeAdvisor._offers(offers)}, Ranking)
+        allowed = {o.offer_id for o in offers}
+        return [i for i in out.order if i in allowed]
+
+    async def explain(self, leg: LegSpec, history: list[dict], options: list[dict]) -> str:
+        out = await self._ask(SYSTEM + " Nothing fits the rules for this leg. Tell the person what failed and what each "
+                              "option breaks, with its price. No advice on which to pick unless one clearly matches the "
+                              "purpose. No more than three sentences.",
+                              {"purpose": self.purpose, "leg": leg.model_dump(mode="json"), "what_failed": history,
+                               "options": options}, Explanation)
+        return out.text
+
+
 def from_env(purpose: str = ""):
     mode = os.environ.get("KEYSTONE_ADVISOR")
     try:
@@ -109,6 +146,8 @@ def from_env(purpose: str = ""):
             return ClaudeAdvisor(purpose)
         if mode == "bedrock":
             return BedrockAdvisor(purpose)
+        if mode == "gemini":
+            return GeminiAdvisor(purpose)
     except Exception:
         return None
     return None

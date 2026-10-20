@@ -1,6 +1,6 @@
 # Handoff (20 Oct 2026)
 
-State: 46 tests pass, 16 of 16 evidence cases pass, 4,800 simulated baskets with 0 errors. Live on the Airwallex sandbox: 20 of 20 probe steps, three full baskets (commit, abort with a rogue capture refused, kill and recovery), see docs/LIVE_BASKETS.md. Credentials live only in the git-ignored `.env` (AWX_CLIENT_ID, AWX_API_KEY, AWS_PROFILE). Repo: github.com/Marc-Dvci/Keystone (MIT).
+State: 48 tests pass, 16 of 16 evidence cases pass, 4,800 simulated baskets with 0 errors. Live on the Airwallex sandbox: 20 of 20 probe steps, four full baskets (commit, abort with a rogue capture refused, kill and recovery, escalation explained by Gemini), see docs/LIVE_BASKETS.md. Credentials live only in the git-ignored `.env` (AWX_CLIENT_ID, AWX_API_KEY, AWS_PROFILE). Repo: github.com/Marc-Dvci/Keystone (MIT).
 
 Live mode: `set -a; . ./.env; set +a; KEYSTONE_MODE=live KEYSTONE_DATA=runs/console_live python -m keystone.serve`. Holds go through Airwallex's Card Element in a headless browser (Native API needs PCI enablement); the sandbox acquirer rejects issued PANs, so the browser types the test card and the leg card carries the issuer side through the bridge (simulation by card_id; by card_number the sandbox answers EXPIRY_MISSING). SINGLE cards close after their first authorization; Keystone issues one card per attempt.
 
@@ -18,8 +18,8 @@ python scripts/drive_console.py --out docs/shots   # headless Chromium, virtual 
 
 ## Open items
 
-1. Bedrock advisor: the AWS account tried so far answers "Operation not allowed" for every model (NOT_AUTHORIZED). Needs a profile on an account with model access; then `KEYSTONE_ADVISOR=bedrock`.
-2. Film, writeup, gallery.
+1. Advisor: Gemini 3.8 Flash on Vertex (`KEYSTONE_ADVISOR=gemini`, `GOOGLE_CLOUD_PROJECT`). Bedrock answers "Operation not allowed" on the AWS account tried.
+2. Film and writeup (no gallery for this project).
 
 ## Known limits
 

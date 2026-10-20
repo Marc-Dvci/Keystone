@@ -392,12 +392,23 @@ class Coordinator:
         return True
 
     async def _rank(self, leg: LegSpec, cands):
+        """The advisor orders offers within a group: offers that fit the leg as written always come
+        before substitutes, because the mandate allows a substitute only when the leg cannot be filled."""
+        exact = [c for c in cands if not c[2].substitute]
+        subs = [c for c in cands if c[2].substitute]
+        if exact:
+            return (await self._rank_group(leg, exact)) + subs
+        return await self._rank_group(leg, subs)
+
+    async def _rank_group(self, leg: LegSpec, cands):
         if self.advisor is None or len(cands) < 2:
             return cands
         try:
             order = await self.advisor.rank(leg, [o for _, o, _ in cands])
             by_id = {o.offer_id: (m, o, f) for m, o, f in cands}
             ranked = [by_id[i] for i in order if i in by_id]
+            self._emit("advisor.ranked", leg_id=leg.leg_id, model=getattr(self.advisor, "model", "advisor"),
+                       order=[o.title for _, o, _ in ranked], allowed=len(cands))
             return ranked + [c for c in cands if c not in ranked]
         except Exception as e:  # the advisor only reorders; the rules already filtered
             self._emit("advisor.failed", error=str(e)[:160])
@@ -410,6 +421,7 @@ class Coordinator:
         if self.advisor is not None:
             try:
                 esc.explanation = await self.advisor.explain(lr.spec, lr.history, options)
+                self._emit("advisor.explained", leg_id=lr.spec.leg_id, model=getattr(self.advisor, "model", "advisor"))
             except Exception as e:
                 self._emit("advisor.failed", error=str(e)[:160])
         if not esc.explanation:

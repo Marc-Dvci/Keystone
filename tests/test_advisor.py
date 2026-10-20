@@ -44,3 +44,15 @@ async def test_broken_advisor_falls_back_to_rules(world):
     world.coordinator.escalate_hook = pick
     rep = await world.coordinator.run(mandate_lisbon(), {})
     assert rep["status"] == "ABORTED" and rep["charged_home"] == "0.00"
+
+
+async def test_advisor_cannot_put_a_substitute_before_an_exact_fit(world):
+    class PreferSubstitute:
+        async def rank(self, leg, offers):
+            return sorted((o.offer_id for o in offers), key=lambda i: i != "STD-3N")
+
+        async def explain(self, leg, history, options):
+            return ""
+    world.coordinator.advisor = PreferSubstitute()
+    rep = await world.coordinator.run(mandate_lisbon(), {})
+    assert rep["legs"]["hotel"]["merchant"] == "baixa-palace"

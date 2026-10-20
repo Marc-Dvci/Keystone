@@ -39,4 +39,12 @@ Basket `bkt_b01da7b8ae35`. The process exited at 15:04:37.751 while preparing th
 | flights | none: the prepare was logged but never sent; the merchant now refuses it | | CLOSED |
 | passes | none | | CLOSED |
 
+## 4. The restaurant cancels; the person decides
+
+Basket `bkt_3f21f7b27538`, with the advisor on Gemini 3.8 Flash (Vertex AI). Nothing satisfied the dinner rules, so Keystone held the other legs and put two priced options to the person. The explanation Gemini wrote, from the options the code priced:
+
+> No offers meet all your criteria for the Thursday client dinner. The tasting menu at Casa Ribeira is €560.00 but is 1.4 km away, exceeding your 1.0 km distance limit. Alternatively, the Chef's counter meets the distance requirement but costs €720.00, exceeding your substitute budget cap of €650.00.
+
+The person approved the €560 table with a passkey over that option's amendment; the instruction's dinner threshold moved to EUR 560.00, a new card was issued for the leg, and the basket committed: four captures, $8,679.52 charged.
+
 The probe of each Airwallex behaviour these runs rely on is in [LIVE_SANDBOX.md](LIVE_SANDBOX.md).

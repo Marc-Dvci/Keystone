@@ -2,7 +2,7 @@
 
 **All-or-nothing agent purchases on Visa.** An agent buying a trip, an event or a bill of materials across several independent merchants gets every piece or pays for none. Keystone holds the card at every merchant first, captures only when every leg is held, and voids the rest in milliseconds when one fails. The buyer is never charged for a partial basket, so there is nothing to refund.
 
-Built on Airwallex Payments (API and the Card Element), Issuing and FX, Visa's Trusted Agent Protocol, and an instruction service shaped on Visa Intelligent Commerce. It runs on the Airwallex sandbox: a four-leg basket held and captured across two currencies, an abort with $0 charged, and a coordinator killed mid-basket and recovered ([docs/LIVE_BASKETS.md](docs/LIVE_BASKETS.md)).
+Built on Airwallex Payments (API and the Card Element), Issuing and FX, Visa's Trusted Agent Protocol, and an instruction service shaped on Visa Intelligent Commerce. It runs on the Airwallex sandbox: a four-leg basket held and captured across two currencies, an abort with $0 charged, a coordinator killed mid-basket and recovered, and an escalation approved by passkey ([docs/LIVE_BASKETS.md](docs/LIVE_BASKETS.md)).
 
 ![Keystone console after an abort](docs/shots/03_aborted.png)
 
@@ -45,7 +45,7 @@ Card rails already contain a two-phase commit. Keystone uses it.
 5. **Decide when a leg fails.** Substitute inside the rules and keep the other holds; or put priced options to the person, who approves one with a passkey over that option's amendment; or abort.
 6. **Commit or abort.** The decision is written to a durable log before any merchant hears it. Commit converts at the locked quotes and captures the most fragile hold first. Abort voids every hold at once. Every card is closed either way, and each outcome is reported to the instruction service.
 
-A model can rank the offers the rules already allow and write the explanation the person reads (`keystone/advisor.py`, Claude, off unless configured). Amounts, rules and decisions are code.
+A model can rank the offers the rules already allow and write the explanation the person reads (`keystone/advisor.py`: Gemini on Vertex AI, Claude, or a Bedrock model; off unless configured). It orders offers only within a group, so an offer that fits the leg as written always comes before a substitute. Amounts, rules and decisions are code.
 
 ## Run it
 
@@ -60,7 +60,7 @@ uv pip install --python .venv -e ".[dev]"
 Open http://localhost:8000, choose the scenario events to inject, and approve with a passkey on your device (or the demo passkey). Then:
 
 ```
-.venv/Scripts/python -m pytest                 # 46 tests; every flow runs on the fake and through the REST client
+.venv/Scripts/python -m pytest                 # 48 tests; every flow runs on the fake and through the REST client
 .venv/Scripts/python -m keystone.evidence      # 16 fault and rules cases -> docs/EVIDENCE.md
 .venv/Scripts/python -m keystone.sim --n 400 --sweep   # the basket simulation
 ```
@@ -79,7 +79,7 @@ set KEYSTONE_MODE=live
 
 **Visa's own TAP registry.** `scripts/visa_registry.py setup | run | register` fetches Visa's sample agent-registry from GitHub, runs it, and registers Keystone's Ed25519 key. Start Keystone with `KEYSTONE_REGISTRY_URL=http://127.0.0.1:9002` and every merchant looks the agent's key up there. `deactivate` is the revocation demo.
 
-**Model advisor.** `KEYSTONE_ADVISOR=1` with `ANTHROPIC_API_KEY` uses Claude; `KEYSTONE_ADVISOR=bedrock` uses a Bedrock model through the Converse API (`KEYSTONE_BEDROCK_MODEL`, `AWS_PROFILE`; install `.[bedrock]`). Without one, the rule-written explanation is shown.
+**Model advisor.** `KEYSTONE_ADVISOR=gemini` with `GOOGLE_CLOUD_PROJECT` uses Gemini 3.8 Flash on Vertex AI (install `.[gemini]`, `gcloud auth application-default login`); the live escalation in [LIVE_BASKETS.md](docs/LIVE_BASKETS.md) ran with it. `KEYSTONE_ADVISOR=1` with `ANTHROPIC_API_KEY` uses Claude; `KEYSTONE_ADVISOR=bedrock` uses a Bedrock model through the Converse API (`KEYSTONE_BEDROCK_MODEL`, `AWS_PROFILE`; install `.[bedrock]`). Without one, the rule-written explanation is shown.
 
 ## Judge map
 
@@ -97,7 +97,7 @@ set KEYSTONE_MODE=live
 
 | Part | Status |
 |---|---|
-| Airwallex REST client | Runs against the sandbox: 20 of 20 probe steps as expected ([LIVE_SANDBOX.md](docs/LIVE_SANDBOX.md)) and three full baskets ([LIVE_BASKETS.md](docs/LIVE_BASKETS.md)) |
+| Airwallex REST client | Runs against the sandbox: 20 of 20 probe steps as expected ([LIVE_SANDBOX.md](docs/LIVE_SANDBOX.md)) and four full baskets ([LIVE_BASKETS.md](docs/LIVE_BASKETS.md)) |
 | Hold placement in live mode | The agent's TAP-signed headless browser types the card into Airwallex's Card Element on the merchant's checkout page (`keystone/checkout.py`); server-side card entry needs PCI-DSS enablement this account does not have |
 | Airwallex replay simulator | Mine. Same paths and JSON as the subset Keystone calls, documented sandbox behaviour (one capture, never above the hold, cancel to CANCELLED, request_id rules, card-control decline reasons) |
 | Visa network between acquiring and issuing | A bridge in `keystone/network.py`. Airwallex's sandbox acquirer rejects Airwallex-issued card numbers ("invalid pan"), so the two sides do not connect there. The bridge sends each authorization to the leg card first (issuing simulation by `card_id`, decided by the basket ledger) and the payment intent is held with Airwallex's test card; captures and voids are mirrored on both sides |

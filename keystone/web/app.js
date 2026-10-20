@@ -151,7 +151,7 @@ function line(e) {
 
 function onEvent(e) {
   const d = e.data;
-  if (e.kind === "basket.opened" && !String(d.basket_id).startsWith("seq_")) { resetLegs(current.mandate); basket = d.basket_id; $("#bid").textContent = basket; }
+  if (e.kind === "basket.opened" && !String(d.basket_id).startsWith("seq_")) { resetLegs(current.mandate); basket = d.basket_id; $("#bid").textContent = basket; $("#intents tbody").innerHTML = ""; $("#cards tbody").innerHTML = ""; }
   const isSeq = String(d.basket_id || "").startsWith("seq_") || e.kind.startsWith("seq.") || e.actor === "sequential";
   const text = line(e);
   if (text) {
@@ -174,6 +174,7 @@ function onEvent(e) {
     case "vic.instruction": $("#vicid").textContent = d.instruction_id; break;
     case "vic.credential": counts.cred++; break;
     case "vic.confirmation": counts.conf++; break;
+    case "plan.leg": if (L) Object.assign(L, { merchant: d.merchant, offer: d.offer, amount: d.amount.split(" ")[0], home: d.home }); break;
     case "basket.planned": for (const [k, v] of Object.entries(d.legs)) if (legs[k]) Object.assign(legs[k], { merchant: v.merchant, offer: v.offer, amount: v.amount.split(" ")[0], home: v.home }); break;
     case "issuer.card_issued": if (L) { L.st.card = true; flash(d.leg_id); } break;
     case "prepare.sent": if (L) { L.offer = d.offer; L.merchant = d.merchant; L.amount = d.amount.split(" ")[0]; } break;

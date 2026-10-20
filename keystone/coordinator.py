@@ -215,6 +215,9 @@ class Coordinator:
                 continue
             lr.merchant, lr.offer, lr.fit = (await self._rank(lr.spec, cands))[0]
             lr.home_amount = await self._home_amount(lr, mandate, window)
+            self._emit("plan.leg", basket_id=basket_id, leg_id=lr.spec.leg_id, merchant=lr.merchant.merchant_id,
+                       offer=lr.offer.title, amount=f"{lr.offer.total(lr.spec.quantity)} {lr.spec.currency}",
+                       home=str(lr.home_amount))
         for lr in unfilled:
             lr.history.append({"why": f"no offer fits {lr.spec.leg_id} as written"})
             self._emit("plan.unfilled", basket_id=basket_id, leg_id=lr.spec.leg_id)

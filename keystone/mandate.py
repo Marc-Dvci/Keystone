@@ -36,7 +36,8 @@ class Cond(BaseModel):
 
     def describe(self) -> str:
         sym = {"eq": "=", "ne": "!=", "le": "<=", "ge": ">=", "lt": "<", "gt": ">", "in": "in", "contains": "has"}
-        return f"{self.attr} {sym[self.op]} {self.value}"
+        name = self.attr.replace("_km", " (km)").replace("_", " ")
+        return f"{name} {sym[self.op]} {self.value}"
 
 
 class Substitution(BaseModel):

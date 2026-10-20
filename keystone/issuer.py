@@ -78,8 +78,8 @@ class BasketLedger:
         amount = Decimal(req["transaction_amount"])
         decision = self._decide(card_id, amount, req)
         self.decisions.append({"request": req, "decision": decision, "at": CLOCK.now().isoformat()})
-        self.bus.emit("ledger.decision", "issuer", card_id=card_id, amount=str(amount),
-                      currency=req.get("transaction_currency"), **decision)
+        self.bus.emit("ledger.decision", "issuer", amount=str(amount), currency=req.get("transaction_currency"),
+                      **{"card_id": card_id, **decision})
         return decision
 
     def _decide(self, card_id: str, amount: Decimal, req: dict) -> dict:
@@ -98,7 +98,7 @@ class BasketLedger:
                     "detail": f"{quantize(after, b.home_currency)} > {b.cap} {b.home_currency}"}
         leg.held = amount
         leg.txn = req.get("card_transaction_id")
-        return {"response_status": "AUTHORIZED", "basket_id": b.basket_id, "leg_id": leg.leg_id,
+        return {"response_status": "AUTHORIZED", "basket_id": b.basket_id, "leg_id": leg.leg_id, "card_id": card_id,
                 "basket_held": str(quantize(after, b.home_currency))}
 
     def released(self, card_id: str) -> None:

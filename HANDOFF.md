@@ -1,6 +1,8 @@
 # Handoff (20 Oct 2026)
 
-State: built and tested in replay mode. 46 tests pass, 16 of 16 evidence cases pass, 4,800 simulated baskets with 0 errors. Not yet run against the Airwallex sandbox (no keys yet). Local git only, not pushed.
+State: 46 tests pass, 16 of 16 evidence cases pass, 4,800 simulated baskets with 0 errors. Live on the Airwallex sandbox: 20 of 20 probe steps, three full baskets (commit, abort with a rogue capture refused, kill and recovery), see docs/LIVE_BASKETS.md. Credentials live only in the git-ignored `.env` (AWX_CLIENT_ID, AWX_API_KEY, AWS_PROFILE). Repo: github.com/Marc-Dvci/Keystone (MIT).
+
+Live mode: `set -a; . ./.env; set +a; KEYSTONE_MODE=live KEYSTONE_DATA=runs/console_live python -m keystone.serve`. Holds go through Airwallex's Card Element in a headless browser (Native API needs PCI enablement); the sandbox acquirer rejects issued PANs, so the browser types the test card and the leg card carries the issuer side through the bridge (simulation by card_id; by card_number the sandbox answers EXPIRY_MISSING). SINGLE cards close after their first authorization; Keystone issues one card per attempt.
 
 ## Run
 
@@ -16,12 +18,11 @@ python scripts/drive_console.py --out docs/shots   # headless Chromium, virtual 
 
 ## Open items
 
-1. Airwallex sandbox keys, then `scripts/live_probe.py`, then a live basket (`KEYSTONE_MODE=live`). Things only the sandbox can answer: whether a SINGLE card accepts a second authorization after a reversal (Keystone already issues one card per attempt), whether an issued card can pay an Airwallex payment intent (the network bridge covers the case where it cannot), the exact simulation capture/reverse path (the client tries the lifecycle path, then the transaction path), and whether `pre_auth` holds behave in sandbox as documented.
-2. Anthropic key for the advisor (`KEYSTONE_ADVISOR=1`); without it the rule-written explanation is shown.
-3. Film, writeup, gallery; repo publishing and licence.
+1. Bedrock advisor: the AWS account tried so far answers "Operation not allowed" for every model (NOT_AUTHORIZED). Needs a profile on an account with model access; then `KEYSTONE_ADVISOR=bedrock`.
+2. Film, writeup, gallery.
 
 ## Known limits
 
 - The basket ledger lives in memory in the Keystone process. After a restart, a hold on an old basket's card is declined (card not in a basket), which fails closed.
-- Live mode holds each payment intent with Airwallex's test card and mirrors the issuer side through the bridge, unless the closed-loop probe shows issued cards can pay intents.
+- Live mode holds each payment intent with Airwallex's test card and mirrors the issuer side through the bridge: the sandbox acquirer rejects Airwallex-issued card numbers.
 - Hardware scenario amounts stay under the 9,999.99 simulation cap per authorization.

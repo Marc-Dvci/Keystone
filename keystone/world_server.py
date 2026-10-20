@@ -73,7 +73,8 @@ async def main() -> None:
     for spec in merchants_lisbon() + merchants_hardware():
         svc = MerchantService(spec["id"], spec["name"], f"127.0.0.1:{spec['port']}", spec["mcc"], spec["currency"],
                               [o.model_copy() for o in spec["offers"]], awx, network, directory,
-                              timedelta(minutes=spec["ttl_min"]), pre_auth=spec["mcc"] == 7011, bus=bus)
+                              timedelta(minutes=spec["ttl_min"]), pre_auth=spec["mcc"] == 7011, bus=bus,
+                              checkout="element" if live() else "server")
         servers.append(uvicorn.Server(uvicorn.Config(svc.app, host="127.0.0.1", port=spec["port"], log_level="warning")))
     print(f"world: {len(servers)} servers, mode={'live' if live() else 'replay'}", flush=True)
     await asyncio.gather(fwd.pump(), *(s.serve() for s in servers))

@@ -139,6 +139,14 @@ class AirwallexClient:
     async def ensure_cardholder(self):
         if self.cardholder_id:
             return self.cardholder_id
+        try:
+            listed = await self._call("GET", "/issuing/cardholders", params={"page_size": 100})
+            for h in (listed.get("items") or []) if isinstance(listed, dict) else []:
+                if h.get("email") == self.cardholder_email and h.get("status") == "READY":
+                    self.cardholder_id = h["cardholder_id"]
+                    return self.cardholder_id
+        except AirwallexError:
+            pass
         d = await self._call("POST", "/issuing/cardholders/create", {
             "type": "INDIVIDUAL", "email": self.cardholder_email,
             "individual": {"name": {"first_name": "Keystone", "last_name": "Agent"}, "date_of_birth": "1985-04-12",
@@ -208,9 +216,10 @@ class AirwallexClient:
                        int(merchant.get("category_code") or 0), merchant.get("name", ""), d.get("failure_reason"), d)
 
     async def simulate_authorization(self, card_id, card_number, amount, currency, mcc, merchant_name):
-        body = {"card_number": card_number, "transaction_amount": _num(quantize(amount, currency)),
+        # The sandbox declines a simulation addressed by card number with EXPIRY_MISSING; by card_id it works.
+        body = {"transaction_amount": _num(quantize(amount, currency)),
                 "transaction_currency": currency, "merchant_category_code": f"{mcc:04d}",
-                "merchant_info": _merchant_info(merchant_name)}
+                "merchant_info": merchant_name[:43]}
         relay = None
         if self.remote_auth is not None and not self.remote_auth_enabled:
             # Remote authorization is not enabled on this sandbox account, so the decision Airwallex would
@@ -223,6 +232,11 @@ class AirwallexClient:
                 "merchant": {"name": merchant_name, "category_code": f"{mcc:04d}"}})
             if relay.get("response_status") != "AUTHORIZED":
                 body["transaction_failure_reason"] = "TRANSACTION_BLOCKED"
+            card_id = card_id or relay.get("card_id") or ""
+        if card_id:
+            body["card_id"] = card_id
+        else:
+            body["card_number"] = card_number
         d = await self._call("POST", "/simulation/issuing/create", body)
         t = self._txn(d, card_id, "AUTHORIZATION")
         self._lifecycle_currency[t.id] = currency
@@ -298,11 +312,6 @@ class AirwallexClient:
     async def balances(self):
         d = await self._call("GET", "/balances/current")
         return {b["currency"]: Decimal(str(b.get("available_amount", 0))) for b in d}
-
-
-def _merchant_info(name: str) -> str:
-    # The reference says merchant_info is exactly 43 characters (the default is shorter); pad to 43.
-    return (name[:43]).ljust(43)
 
 
 def _json(r: httpx.Response) -> Any:

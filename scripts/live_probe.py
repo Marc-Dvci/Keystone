@@ -22,8 +22,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from keystone import tap  # noqa: E402
 from keystone.airwallex.base import AirwallexError, CardDetails, Controls  # noqa: E402
 from keystone.airwallex.client import SANDBOX, AirwallexClient  # noqa: E402
+from keystone.checkout import AgentBrowser, page_html  # noqa: E402
+
+PAGES: dict[str, str] = {}
+
+
+def page_server():
+    """Serves the probe's checkout pages: Airwallex's Card Element, like a merchant would."""
+    import uvicorn
+    from fastapi import FastAPI
+    from fastapi.responses import HTMLResponse
+    app = FastAPI()
+
+    @app.get("/checkout/{k}")
+    async def co(k: str):
+        return HTMLResponse(PAGES[k])
+    return uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8197, log_level="warning"))
 
 TEST_CARD = CardDetails("4035501000000008", "12", "2030", "123", "Keystone Probe")
 rows: list[dict] = []
@@ -53,18 +70,32 @@ async def main() -> None:
         sys.exit("set AWX_CLIENT_ID and AWX_API_KEY (sandbox.airwallex.com > Account > Developer > API keys)")
     c = AirwallexClient(base_url=SANDBOX)
     s: dict = {}
+    srv = page_server()
+    srv_task = asyncio.create_task(srv.serve())
+    await asyncio.sleep(1)
+    browser = AgentBrowser(tap.AgentKey.from_seed("keystone-probe", b"probe"))
 
-    await step("login", lambda: c._auth(), "a bearer token")
+    async def login():
+        tok = await c._auth()
+        return bool(tok), "bearer token received (not recorded)"
+    await step("login", login, "a bearer token")
     await step("balances", lambda: c.balances(), "a balance per currency")
 
-    async def hold(currency="USD", amount=Decimal("123.45"), pre_auth=False):
+    async def hold(currency="USD", amount=Decimal("123.45"), pre_auth=False, card=TEST_CARD):
+        # Server-side card entry needs PCI enablement ("native API"), so the hold is confirmed in
+        # Airwallex's Card Element by a headless browser, with autoCapture false.
         it = await c.create_intent(amount, currency, f"probe-{uuid.uuid4().hex[:8]}", rid(), {"probe": "keystone"})
-        return await c.confirm_hold(it.id, TEST_CARD, rid(), pre_auth)
+        k = uuid.uuid4().hex
+        PAGES[k] = page_html(it.id, it.raw["client_secret"], currency, "demo", pre_auth, "Keystone probe", str(amount))
+        r = await browser.pay(f"http://127.0.0.1:8197/checkout/{k}", card)
+        it = await c.get_intent(it.id)
+        it.raw["checkout"] = r["detail"]
+        return it
 
     async def h1():
         s["a"] = await hold()
         return s["a"].status == "REQUIRES_CAPTURE", f"{s['a'].id} {s['a'].status}"
-    await step("hold (auto_capture false)", h1, "REQUIRES_CAPTURE")
+    await step("hold (Card Element, autoCapture false)", h1, "REQUIRES_CAPTURE")
 
     async def h2():
         s["b"] = await hold("EUR", Decimal("210.00"), pre_auth=True)
@@ -165,12 +196,16 @@ async def main() -> None:
     await step("SINGLE card after a reversal", single, "recorded (decides whether Keystone needs a card per attempt)")
 
     async def closed_loop():
-        it = await c.create_intent(Decimal("10.00"), "EUR", f"probe-loop-{uuid.uuid4().hex[:6]}", rid(), {})
-        try:
-            it = await c.confirm_hold(it.id, s["det"], rid(), False)
-            return True, f"an Airwallex-issued card paid an Airwallex intent: {it.status}"
-        except AirwallexError as e:
-            return True, f"not routed in sandbox ({e.code}); Keystone's network bridge mirrors it instead"
+        ctl = Controls(Decimal("100.00"), "USD", [], None, None, None)
+        cd = await c.create_card(s["ch"], ctl, "probe-loop", rid())
+        d = await c.card_details(cd.id)
+        it = await hold("USD", Decimal("10.00"), card=d)
+        await c.set_card_status(cd.id, "CLOSED")
+        if it.status == "REQUIRES_CAPTURE":
+            await c.cancel(it.id, "probe", rid())
+            return True, "an Airwallex-issued card was accepted by Airwallex acquiring"
+        return True, (f"not accepted ({it.status}: {it.raw.get('checkout', '')[:90]}); "
+                      "Keystone's network bridge carries the issuer side instead")
     await step("closed loop: issued card pays a payment intent", closed_loop, "recorded")
 
     async def close():
@@ -182,6 +217,9 @@ async def main() -> None:
             return True, f"after close: {e.code}"
     await step("close the card, then try it", close, "CARD_CLOSED")
 
+    await browser.close()
+    srv.should_exit = True
+    await srv_task
     out = ROOT / "runs" / "live_probe.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps({"at": datetime.now(timezone.utc).isoformat(), "rows": rows, "calls": c.calls}, indent=1))

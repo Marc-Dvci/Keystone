@@ -2,7 +2,7 @@
 
 **All-or-nothing agent purchases on Visa.** An agent buying a trip, an event or a bill of materials across several independent merchants gets every piece or pays for none. Keystone holds the card at every merchant first, captures only when every leg is held, and voids the rest in milliseconds when one fails. The buyer is never charged for a partial basket, so there is nothing to refund.
 
-Built on Airwallex Payments, Issuing and FX, Visa's Trusted Agent Protocol, and an instruction service shaped on Visa Intelligent Commerce.
+Built on Airwallex Payments (API and the Card Element), Issuing and FX, Visa's Trusted Agent Protocol, and an instruction service shaped on Visa Intelligent Commerce. It runs on the Airwallex sandbox: a four-leg basket held and captured across two currencies, an abort with $0 charged, and a coordinator killed mid-basket and recovered ([docs/LIVE_BASKETS.md](docs/LIVE_BASKETS.md)).
 
 ![Keystone console after an abort](docs/shots/03_aborted.png)
 
@@ -65,9 +65,11 @@ Open http://localhost:8000, choose the scenario events to inject, and approve wi
 .venv/Scripts/python -m keystone.sim --n 400 --sweep   # the basket simulation
 ```
 
-**Airwallex sandbox.** Sign up at sandbox.airwallex.com and copy the Client ID and API key from Account > Developer > API keys.
+**Airwallex sandbox.** Sign up at sandbox.airwallex.com and copy the Client ID and API key from Account > Developer > API keys (allowlist your public IP there). Live mode places each hold through Airwallex's Card Element in a headless browser, so it needs Chromium.
 
 ```
+uv pip install --python .venv -e ".[live]"
+.venv/Scripts/python -m playwright install chromium
 set AWX_CLIENT_ID=...
 set AWX_API_KEY=...
 .venv/Scripts/python scripts/live_probe.py     # every Airwallex behaviour Keystone relies on -> docs/LIVE_SANDBOX.md
@@ -77,13 +79,13 @@ set KEYSTONE_MODE=live
 
 **Visa's own TAP registry.** `scripts/visa_registry.py setup | run | register` fetches Visa's sample agent-registry from GitHub, runs it, and registers Keystone's Ed25519 key. Start Keystone with `KEYSTONE_REGISTRY_URL=http://127.0.0.1:9002` and every merchant looks the agent's key up there. `deactivate` is the revocation demo.
 
-**Claude advisor.** Set `ANTHROPIC_API_KEY` and `KEYSTONE_ADVISOR=1`.
+**Model advisor.** `KEYSTONE_ADVISOR=1` with `ANTHROPIC_API_KEY` uses Claude; `KEYSTONE_ADVISOR=bedrock` uses a Bedrock model through the Converse API (`KEYSTONE_BEDROCK_MODEL`, `AWS_PROFILE`; install `.[bedrock]`). Without one, the rule-written explanation is shown.
 
 ## Judge map
 
 | Requirement | Where |
 |---|---|
-| Uses Airwallex APIs | Payment intents (create, confirm with `pre_auth` and `auto_capture: false`, capture, cancel, refunds), Issuing (cardholder, cards with authorization controls, card details, update, simulation of authorize, capture, reverse, refund, transactions), FX (quotes with validity, conversions with `quote_id`, rates), balances, remote-authorization contract. All calls in `keystone/airwallex/client.py`, listed in [docs/AIRWALLEX_CALLS.md](docs/AIRWALLEX_CALLS.md) |
+| Uses Airwallex APIs | Payment intents (create, hold through Airwallex.js Card Element with `autoCapture: false` or `pre_auth`, capture, cancel, refunds), Issuing (cardholder, cards with authorization controls, card details, update, simulation of authorize, capture, reverse, refund, transactions), FX (quotes with validity, conversions with `quote_id`, rates), balances, remote-authorization contract. All calls in `keystone/airwallex/client.py`, listed in [docs/AIRWALLEX_CALLS.md](docs/AIRWALLEX_CALLS.md) |
 | Uses Visa tooling | Trusted Agent Protocol: RFC 9421 Ed25519 signatures with the `agent-browser-auth` and `agent-payer-auth` tags on every merchant call (`keystone/tap.py`), interop with Visa's sample agent-registry and its request format. Visa Intelligent Commerce: instruction, credentials, amendments and confirmations shaped on the CyberSource guide (`keystone/vic.py`). Visa Core Rules checked in code (`keystone/rules.py`). See [docs/VISA.md](docs/VISA.md) |
 | A financial decision that changes with the facts | Substitute, escalate or abort when a leg fails, inside a cap that holds across currencies at locked rates |
 | Approvals bound to exact terms | Passkey assertion over the mandate digest; a second assertion over each amendment |
@@ -95,9 +97,10 @@ set KEYSTONE_MODE=live
 
 | Part | Status |
 |---|---|
-| Airwallex REST client | Real request shapes from the API reference. The live probe records what the sandbox answers |
+| Airwallex REST client | Runs against the sandbox: 20 of 20 probe steps as expected ([LIVE_SANDBOX.md](docs/LIVE_SANDBOX.md)) and three full baskets ([LIVE_BASKETS.md](docs/LIVE_BASKETS.md)) |
+| Hold placement in live mode | The agent's TAP-signed headless browser types the card into Airwallex's Card Element on the merchant's checkout page (`keystone/checkout.py`); server-side card entry needs PCI-DSS enablement this account does not have |
 | Airwallex replay simulator | Mine. Same paths and JSON as the subset Keystone calls, documented sandbox behaviour (one capture, never above the hold, cancel to CANCELLED, request_id rules, card-control decline reasons) |
-| Visa network between acquiring and issuing | A bridge in `keystone/network.py`. In the sandbox the two sides are separate APIs, so the bridge carries each authorization to the issuer first, then holds the payment intent; in live mode the intent is held with Airwallex's test card |
+| Visa network between acquiring and issuing | A bridge in `keystone/network.py`. Airwallex's sandbox acquirer rejects Airwallex-issued card numbers ("invalid pan"), so the two sides do not connect there. The bridge sends each authorization to the leg card first (issuing simulation by `card_id`, decided by the basket ledger) and the payment intent is held with Airwallex's test card; captures and voids are mirrored on both sides |
 | Issuer remote authorization | The endpoint follows Airwallex's v2 contract (x-nonce, HMAC, echoed event id). The simulator calls it the way Airwallex does; in live mode the call is relayed until remote auth is enabled on the account |
 | TAP | The protocol as specified, with Visa's sample registry as the key directory option |
 | Visa Intelligent Commerce | A stand-in with the published field names. VIC is pilot-gated; the service is behind one interface so the real one can replace it |
@@ -124,3 +127,7 @@ keystone/
 scripts/            live sandbox probe, Visa registry, headless console driver, figures
 docs/               evidence, simulation, Airwallex calls, Visa notes, screenshots
 ```
+
+## Licence
+
+MIT, see [LICENSE](LICENSE). Visa's TAP sample is not included; `scripts/visa_registry.py` fetches it from GitHub under Visa's own terms.

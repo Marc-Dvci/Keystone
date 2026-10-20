@@ -25,8 +25,9 @@ from typing import Any
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
+from . import checkout as checkout_page
 from . import rules, tap
 from .airwallex.base import AirwallexError, CardDetails
 from .canonical import canonical, digest
@@ -70,7 +71,7 @@ class Hold:
     mandate_digest: str
     reserved_until: datetime
     authorized_at: datetime
-    state: str = "HELD"  # HELD | CAPTURED | VOIDED
+    state: str = "HELD"  # PENDING_CHECKOUT | HELD | CAPTURED | VOIDED | REFUNDED
     receipts: dict = field(default_factory=dict)
     voided_at: datetime | None = None
     abort_requested_at: datetime | None = None
@@ -86,7 +87,8 @@ class Fault:
 class MerchantService:
     def __init__(self, merchant_id: str, name: str, authority: str, mcc: int, currency: str, offers: list[Offer],
                  acquirer, network: Network, directory: tap.KeyDirectory, reservation_ttl: timedelta,
-                 pre_auth: bool = False, bus: Bus = BUS, seed: bytes | None = None):
+                 pre_auth: bool = False, bus: Bus = BUS, seed: bytes | None = None, checkout: str = "server",
+                 awx_env: str = "demo"):
         self.id = merchant_id
         self.name = name
         self.authority = authority
@@ -100,6 +102,11 @@ class MerchantService:
         self.nonces = tap.MemoryNonceStore()
         self.ttl = reservation_ttl
         self.pre_auth = pre_auth
+        # "server": the merchant confirms the hold through the API (replay simulator).
+        # "element": the buyer's browser confirms it in Airwallex's Card Element (Airwallex sandbox).
+        self.checkout = checkout
+        self.awx_env = awx_env
+        self.checkout_tokens: dict[str, tuple[str, str, str]] = {}
         self.bus = bus
         self.key = Ed25519PrivateKey.from_private_bytes(
             hashlib.sha256(seed or merchant_id.encode()).digest())
@@ -148,7 +155,7 @@ class MerchantService:
         """Presumed abort: void every reservation whose deadline passed without a commit."""
         now = CLOCK.now()
         for h in list(self.holds.values()):
-            if h.state == "HELD" and now > h.reserved_until:
+            if h.state in ("HELD", "PENDING_CHECKOUT") and now > h.reserved_until:
                 await self._void(h, "reservation_expired")
 
     async def _void(self, h: Hold, reason: str) -> None:
@@ -171,6 +178,8 @@ class MerchantService:
             h = self.holds[key]
             if h.state == "HELD":
                 return h.receipts["hold"]
+            if h.state == "PENDING_CHECKOUT":
+                return await self._finish_checkout(h, v)
             raise HTTPException(409, {"error": f"leg_{h.state.lower()}"})
         offer = self.offers.get(body["offer_id"])
         if offer is None:
@@ -201,7 +210,10 @@ class MerchantService:
                 {"keystone_basket": key[0], "keystone_leg": key[1], "mandate_digest": body["mandate_digest"],
                  "tap_key_id": v.key_id, "merchant": self.id})
             card = CardDetails(**body["payment"]["card"])
-            await self.net.authorize(intent, card, self.mcc, self.name, rid(intent.id, "confirm"), self.pre_auth)
+            if self.checkout == "element":
+                await self.net.authorize_issuer(intent, card, self.mcc, self.name)
+            else:
+                await self.net.authorize(intent, card, self.mcc, self.name, rid(intent.id, "confirm"), self.pre_auth)
         except Declined as d:
             offer.available += qty
             self._emit("merchant.declined", basket_id=key[0], leg_id=key[1], reason=d.reason)
@@ -212,6 +224,15 @@ class MerchantService:
         reserved_until = min(commit_by, now + self.ttl)
         h = Hold(key[0], key[1], offer.offer_id, qty, amount, offer.currency, intent.id, body["mandate_digest"],
                  reserved_until, now)
+        if self.checkout == "element":
+            h.state = "PENDING_CHECKOUT"
+            h.receipts["pending"] = {"title": offer.title, "attrs": offer.attrs,
+                                     "client_secret": intent.raw.get("client_secret", ""), "window": window.to_json()}
+            self.holds[key] = h
+            token = hashlib.sha256(f"{intent.id}|{self.id}".encode()).hexdigest()[:24]
+            self.checkout_tokens[token] = key
+            self._emit("merchant.checkout_ready", basket_id=key[0], leg_id=key[1], intent=intent.id)
+            return self._needs_checkout(token, intent.id)
         valid_to = now + rules.validity(self.mcc, extended=self.pre_auth)
         h.receipts["hold"] = self._receipt(
             "hold", h, title=offer.title, attrs=offer.attrs, reserved_until=reserved_until.isoformat(timespec="seconds"),
@@ -222,6 +243,34 @@ class MerchantService:
         self._emit("merchant.held", basket_id=key[0], leg_id=key[1], intent=intent.id, amount=str(amount),
                    currency=offer.currency, reserved_until=reserved_until.isoformat(timespec="seconds"),
                    title=offer.title)
+        return h.receipts["hold"]
+
+    def _needs_checkout(self, token: str, intent_id: str) -> JSONResponse:
+        return JSONResponse({"status": "needs_checkout", "checkout_url": f"http://{self.authority}/checkout/{token}",
+                             "intent_id": intent_id}, status_code=202)
+
+    async def _finish_checkout(self, h: Hold, v: tap.Verified):
+        """The buyer's browser confirmed (or not) in Airwallex's Card Element; the intent says which."""
+        it = await self.acq.get_intent(h.intent_id)
+        if it.status == "REQUIRES_PAYMENT_METHOD":
+            token = next(t for t, k in self.checkout_tokens.items() if k == (h.basket_id, h.leg_id, h.offer_id))
+            return self._needs_checkout(token, h.intent_id)
+        if it.status != "REQUIRES_CAPTURE":
+            await self._void(h, f"checkout_{it.status.lower()}")
+            raise HTTPException(402, {"error": "declined", "reason": f"intent {it.status}"})
+        p = h.receipts.pop("pending")
+        h.state = "HELD"
+        h.authorized_at = CLOCK.now()
+        valid_to = h.authorized_at + rules.validity(self.mcc, extended=self.pre_auth)
+        h.receipts["hold"] = self._receipt(
+            "hold", h, title=p["title"], attrs=p["attrs"], reserved_until=h.reserved_until.isoformat(timespec="seconds"),
+            authorization_valid_to=valid_to.isoformat(timespec="seconds"),
+            terms="void before capture is free; capture only on a keystone commit for this basket",
+            tap={"key_id": v.key_id, "nonce": v.nonce, "tag": v.tag}, checks=[p["window"]],
+            confirmed_in="Airwallex Card Element")
+        self._emit("merchant.held", basket_id=h.basket_id, leg_id=h.leg_id, intent=h.intent_id, amount=str(h.amount),
+                   currency=h.currency, reserved_until=h.reserved_until.isoformat(timespec="seconds"), title=p["title"],
+                   via="Airwallex Card Element")
         return h.receipts["hold"]
 
     async def commit(self, body: dict, v: tap.Verified) -> dict:
@@ -258,8 +307,8 @@ class MerchantService:
                                 "leg_id": body["leg_id"], "offer_id": body["offer_id"], "note": "no hold existed"}, "signature": "", "key_id": ""}
         if h.state == "CAPTURED":
             raise HTTPException(409, {"error": "leg_captured"})
-        if h.state == "VOIDED":
-            return h.receipts["void"]
+        if h.state in ("VOIDED", "REFUNDED"):
+            return h.receipts.get("void") or h.receipts.get("refund")
         h.abort_requested_at = CLOCK.now()
         await self._void(h, body.get("reason", "basket_aborted"))
         if self.rogue:
@@ -305,6 +354,17 @@ class MerchantService:
                     "receipt_key": {"key_id": svc.key_id, "alg": "ed25519", "public_key": svc.public_b64},
                     "keystone": "1", "phases": ["prepare", "commit", "abort"], "tap_tags": sorted(tap.TAP_TAGS)}
 
+        @app.get("/checkout/{token}")
+        async def checkout(token: str, request: Request):
+            await svc._verify(request, b"", tap.TAG_PAY)
+            key = svc.checkout_tokens.get(token)
+            h = svc.holds.get(key) if key else None
+            if h is None or h.state != "PENDING_CHECKOUT":
+                raise HTTPException(404, {"error": "no_pending_checkout"})
+            p = h.receipts["pending"]
+            return HTMLResponse(checkout_page.page_html(h.intent_id, p["client_secret"], h.currency, svc.awx_env,
+                                                        svc.pre_auth, f"{svc.name}: {p['title']}", str(h.amount)))
+
         @app.get("/catalog")
         async def catalog(request: Request):
             await svc._verify(request, b"", tap.TAG_BROWSE)
@@ -327,6 +387,8 @@ class MerchantService:
                 raise HTTPException(503, {"error": "merchant_unavailable"})
             await svc.sweep()
             out = await getattr(svc, name)(data, v)
+            if isinstance(out, JSONResponse):
+                return out
             if f and f.mode == "after_effect_error":
                 svc._emit("fault.injected", phase=name, mode=f.mode, leg_id=data.get("leg_id"))
                 raise HTTPException(503, {"error": "merchant_unavailable_after_effect"})
@@ -393,6 +455,7 @@ class MerchantService:
         for k, n in self.initial.items():
             self.offers[k].available = n
         self.holds.clear()
+        self.checkout_tokens.clear()
         self.aborted.clear()
         self.faults.clear()
         self.rogue = False

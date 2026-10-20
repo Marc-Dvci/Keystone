@@ -21,6 +21,8 @@ from sse_starlette.sse import EventSourceResponse
 from . import remote_auth, tap
 from .airwallex.client import SANDBOX, AirwallexClient
 from .canonical import digest
+from .checkout import AgentBrowser
+from .network import SANDBOX_TEST_CARD
 from .coordinator import Coordinator, CoordinatorCrash, MerchantRef
 from .events import Bus
 from .issuer import BasketLedger
@@ -56,6 +58,7 @@ demo_auth = SoftAuthenticator(origin=ORIGIN, seed=b"keystone-demo-passkey")
 vic = VicStandIn(passkeys, bus)
 agent_key = tap.AgentKey.from_seed("keystone-agent-1", os.environ.get("KEYSTONE_AGENT_SEED", "keystone-demo").encode())
 key_active = {"v": True}
+browser = AgentBrowser(agent_key, f"{ORIGIN}/registry") if LIVE else None
 
 
 class _NoRoutes:
@@ -76,16 +79,25 @@ coordinators: dict[str, Coordinator] = {}
 def make_coordinator(scenario: str, cls=Coordinator) -> Coordinator:
     c = cls(journal=journal, agent_key=agent_key, merchants=_refs(scenario), fx=awx, issuing=awx, network=_NoRoutes(),
             ledger=ledger, http=http, bus=bus, directory_url=f"{ORIGIN}/registry", vic=vic if cls is Coordinator else None,
-            escalation_timeout_s=600, advisor=advisor_from_env(SCENARIOS[scenario]["mandate"]().purpose))
+            escalation_timeout_s=600, browser=browser, checkout_card=SANDBOX_TEST_CARD if LIVE else None,
+            phase_timeout_s=20 if LIVE else 6, advisor=advisor_from_env(SCENARIOS[scenario]["mandate"]().purpose))
 
-    async def source(iid: str, leg_id: str) -> dict:
-        basket = next(b for b, i in c.instructions.items() if i == iid)
-        _, d = c.cards.by_leg[(basket, leg_id)]
-        return {"number": d.number, "expiry_month": d.expiry_month, "expiry_year": d.expiry_year, "cvc": d.cvc,
-                "name": d.name}
-    if cls is Coordinator:
-        vic.source = source
     return c
+
+
+async def _vic_source(iid: str, leg_id: str) -> dict:
+    """The leg card behind a VIC credential, whichever coordinator holds the basket."""
+    for c in coordinators.values():
+        for b, i in c.instructions.items():
+            if i == iid and (b, leg_id) in c.cards.by_leg:
+                _, d = c.cards.by_leg[(b, leg_id)]
+                return {"number": d.number, "expiry_month": d.expiry_month, "expiry_year": d.expiry_year,
+                        "cvc": d.cvc, "name": d.name}
+    raise HTTPException(404, {"error": "no_card_for_leg"})
+
+
+vic.source = _vic_source
+recovered = asyncio.Event()
 
 
 app = FastAPI(title="Keystone")
@@ -106,10 +118,17 @@ async def startup():
 
 
 async def _recover():
-    await asyncio.sleep(1.0)
+    try:
+        await _recover_inner()
+    finally:
+        recovered.set()
+
+
+async def _recover_inner():
     unfinished = journal.unfinished()
     if not unfinished:
         return
+    await asyncio.sleep(1.0)  # let the merchants' process come up after a restart
     scen = "hardware" if any("pilot" in m.get("mandate_id", "") for _, m, _ in unfinished) else "lisbon"
     c = make_coordinator(scen)
     for b, _, _ in unfinished:
@@ -211,6 +230,7 @@ async def scenario(name: str = "lisbon"):
 
 @app.post("/api/run")
 async def run(payload: dict):
+    await recovered.wait()
     if state["running"]:
         raise HTTPException(409, {"error": "a basket is already running"})
     name = payload.get("scenario", state["scenario"])

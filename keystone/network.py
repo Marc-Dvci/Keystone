@@ -54,6 +54,19 @@ class Network:
     def register_card(self, pan: str, card_id: str) -> None:
         self.routes[pan] = card_id
 
+    async def authorize_issuer(self, intent: Intent, card: CardDetails, mcc: int, merchant: str) -> Link:
+        """The issuer half only: used when the acquirer half is completed in the buyer's browser."""
+        card_id = self.routes.get(card.number, "")
+        txn = await self.iss.simulate_authorization(card_id, card.number, intent.amount, intent.currency, mcc, merchant)
+        self.bus.emit("issuer.authorization", "issuer", card_id=card_id or txn.card_id, txn=txn.id,
+                      amount=str(intent.amount), currency=intent.currency, merchant=merchant, status=txn.status,
+                      reason=txn.failure_reason)
+        if txn.status == "FAILED":
+            raise Declined(txn.failure_reason or "DECLINED")
+        link = Link(intent.id, card_id or txn.card_id, txn.id, intent.amount, intent.currency, merchant, CLOCK.now())
+        self.links[intent.id] = link
+        return link
+
     async def authorize(self, intent: Intent, card: CardDetails, mcc: int, merchant: str, request_id: str,
                         pre_auth: bool) -> Link:
         # The simulation routes by card number, so an unregistered PAN still reaches the issuer.

@@ -86,7 +86,8 @@ class Coordinator:
     def __init__(self, *, journal: Journal, agent_key: tap.AgentKey, merchants: list[MerchantRef], fx, issuing,
                  network, ledger: BasketLedger, http: httpx.AsyncClient, bus: Bus = BUS,
                  directory_url: str | None = None, advisor=None, escalate: Escalator | None = None,
-                 phase_timeout_s: float = 6.0, escalation_timeout_s: float = 300.0, vic=None):
+                 phase_timeout_s: float = 6.0, escalation_timeout_s: float = 300.0, vic=None, browser=None,
+                 checkout_card=None):
         self.journal = journal
         self.key = agent_key
         self.merchants = merchants
@@ -104,6 +105,8 @@ class Coordinator:
         self.escalations: dict[str, Escalation] = {}
         self.browse_errors: dict[str, list[str]] = {}
         self.vic = vic
+        self.browser = browser  # AgentBrowser, for merchants whose checkout is Airwallex's Card Element
+        self.checkout_card = checkout_card  # the card typed there; the sandbox acquirer accepts only test cards
         self.instructions: dict[str, str] = {}  # basket_id -> VIC instruction id
         self.crash_after: str | None = None  # fault injection: "prepare:<leg_id>" stops the coordinator there
 
@@ -120,6 +123,8 @@ class Coordinator:
         body = {**body, "phase": phase}
         r = await self._signed("POST", f"{m.base_url}/keystone/{phase}", body, tap.TAG_PAY)
         data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"error": r.text}
+        if r.status_code == 202 and data.get("status") == "needs_checkout":
+            return data
         if r.status_code != 200:
             raise PhaseError(r.status_code, data)
         return data
@@ -278,6 +283,18 @@ class Coordinator:
         if self.crash_after == f"prepare:{lr.spec.leg_id}":
             raise CoordinatorCrash(lr.spec.leg_id)
         receipt = await self._phase(lr.merchant, "prepare", body)
+        if receipt.get("status") == "needs_checkout":
+            if self.browser is None:
+                raise PhaseError(501, {"error": "checkout_needs_a_browser"})
+            card = self.checkout_card or details
+            self._emit("checkout.browser", basket_id=basket_id, leg_id=lr.spec.leg_id, merchant=lr.merchant.merchant_id,
+                       intent=receipt["intent_id"], card_last4=card.number[-4:],
+                       note="agent browser, TAP-signed, card typed into Airwallex's Card Element, hold only")
+            res = await self.browser.pay(receipt["checkout_url"], card)
+            self._emit("checkout.done", basket_id=basket_id, leg_id=lr.spec.leg_id, ok=res["ok"], detail=res["detail"][:160])
+            receipt = await self._phase(lr.merchant, "prepare", body)
+            if receipt.get("status") == "needs_checkout":
+                raise PhaseError(402, {"error": "declined", "reason": "checkout not completed"})
         lr.receipt = receipt
         lr.state = "HELD"
         self.journal.append(basket_id, "prepare.held", lr.spec.leg_id, merchant=lr.merchant.merchant_id,

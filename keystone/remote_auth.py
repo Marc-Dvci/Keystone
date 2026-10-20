@@ -37,7 +37,9 @@ async def endpoint(request: Request, secret: str, ledger) -> dict:
     body = await request.json()
     d = await ledger.decide(body)
     return {"card_transaction_event_id": body.get("card_transaction_event_id"),
-            "response_status": d["response_status"], "status_reason": d.get("status_reason") or "basket ledger approved"}
+            "response_status": d["response_status"], "status_reason": d.get("status_reason") or "basket ledger approved",
+            # Not part of Airwallex's contract (ignored there); lets the live relay name the card by id.
+            "card_id": d.get("card_id")}
 
 
 class Caller:

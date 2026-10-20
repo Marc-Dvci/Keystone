@@ -2,7 +2,8 @@
 plain words. It never decides an amount, never moves money and never widens the mandate; the
 coordinator only reorders candidates that ``fit()`` accepted, and shows the explanation to a person.
 
-Enabled when ANTHROPIC_API_KEY (or an ``ant auth login`` profile) is available and KEYSTONE_ADVISOR=1.
+KEYSTONE_ADVISOR=1 uses Claude through the Anthropic API. KEYSTONE_ADVISOR=bedrock uses a model on Amazon
+Bedrock through the Converse API (KEYSTONE_BEDROCK_MODEL, KEYSTONE_BEDROCK_REGION, AWS_PROFILE).
 """
 from __future__ import annotations
 
@@ -65,10 +66,49 @@ class ClaudeAdvisor:
         return msg.parsed_output.text
 
 
-def from_env(purpose: str = "") -> ClaudeAdvisor | None:
-    if os.environ.get("KEYSTONE_ADVISOR") != "1":
-        return None
+class BedrockAdvisor:
+    """Same job on Amazon Bedrock. Asks for JSON and keeps only ids that were offered."""
+
+    def __init__(self, purpose: str = ""):
+        import boto3
+        self.client = boto3.client("bedrock-runtime", region_name=os.environ.get("KEYSTONE_BEDROCK_REGION", "eu-west-1"))
+        self.model = os.environ.get("KEYSTONE_BEDROCK_MODEL", "eu.amazon.nova-pro-v1:0")
+        self.purpose = purpose
+
+    async def _ask(self, system: str, payload: dict) -> dict:
+        import asyncio
+
+        def call():
+            r = self.client.converse(modelId=self.model, system=[{"text": system}],
+                                     messages=[{"role": "user", "content": [{"text": json.dumps(payload)}]}],
+                                     inferenceConfig={"maxTokens": 600, "temperature": 0})
+            return "".join(c.get("text", "") for c in r["output"]["message"]["content"])
+        text = await asyncio.to_thread(call)
+        start, end = text.find("{"), text.rfind("}")
+        return json.loads(text[start:end + 1])
+
+    async def rank(self, leg: LegSpec, offers: list[Offer]) -> list[str]:
+        out = await self._ask(SYSTEM + ' Answer only with JSON: {"order": [offer_id, ...], "reason": "..."}.',
+                              {"purpose": self.purpose, "leg": leg.model_dump(mode="json"),
+                               "offers": ClaudeAdvisor._offers(offers)})
+        allowed = {o.offer_id for o in offers}
+        return [i for i in out.get("order", []) if i in allowed]
+
+    async def explain(self, leg: LegSpec, history: list[dict], options: list[dict]) -> str:
+        out = await self._ask(SYSTEM + " Nothing fits the rules for this leg. Tell the person what failed and what each "
+                              "option breaks, with its price, in at most three sentences. Answer only with JSON: "
+                              '{"text": "..."}.', {"purpose": self.purpose, "leg": leg.model_dump(mode="json"),
+                                                   "what_failed": history, "options": options})
+        return str(out.get("text", ""))
+
+
+def from_env(purpose: str = ""):
+    mode = os.environ.get("KEYSTONE_ADVISOR")
     try:
-        return ClaudeAdvisor(purpose)
+        if mode == "1":
+            return ClaudeAdvisor(purpose)
+        if mode == "bedrock":
+            return BedrockAdvisor(purpose)
     except Exception:
         return None
+    return None
